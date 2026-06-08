@@ -4,8 +4,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import org.jetbrains.annotations.Nullable;
 
@@ -35,10 +36,16 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
     private final List<MEInventoryUpdatePacket> packets = new ArrayList<>();
     private final int containerId;
     private final boolean fullUpdateFlag;
-    // simple in-memory cache to avoid rebuilding identical full-update packets when the player
+    // bounded LRU cache to avoid rebuilding identical full-update packets when the player
     // repeatedly opens the terminal and the underlying grid state did not change.
-    private static final ConcurrentMap<Long, CacheEntry> PACKET_CACHE = new ConcurrentHashMap<>();
-    private static final long CACHE_TTL_MS = 2_000L; // keep cached packets for 2s
+    private static final int MAX_CACHE_ENTRIES = 64;
+    private static final Map<Long, CacheEntry> PACKET_CACHE = Collections.synchronizedMap(
+            new LinkedHashMap<Long, CacheEntry>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<Long, CacheEntry> eldest) {
+                    return size() > MAX_CACHE_ENTRIES;
+                }
+            });
 
     @Nullable
     private AEKeyFilter filter;
@@ -72,7 +79,7 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
             long cacheKey = ((long) containerId << 32) ^ (hash & 0xffffffffL);
             var cached = PACKET_CACHE.get(cacheKey);
 
-            if (cached != null && System.currentTimeMillis() - cached.timestamp <= CACHE_TTL_MS) {
+            if (cached != null) {
                 // reuse cached packets
                 packets.addAll(cached.packets);
                 // nothing to do
@@ -125,7 +132,7 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
 
         if (fullUpdateFlag) {
             long cacheKey = ((long) containerId << 32) ^ (hash & 0xffffffffL);
-            PACKET_CACHE.put(cacheKey, new CacheEntry(List.copyOf(packets), System.currentTimeMillis()));
+            PACKET_CACHE.put(cacheKey, new CacheEntry(List.copyOf(packets)));
         }
     }
 
@@ -184,6 +191,11 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
         return packets;
     }
 
-    private record CacheEntry(List<MEInventoryUpdatePacket> packets, long timestamp) {
+    private static final class CacheEntry {
+        final List<MEInventoryUpdatePacket> packets;
+
+        CacheEntry(List<MEInventoryUpdatePacket> packets) {
+            this.packets = packets;
+        }
     }
 }
