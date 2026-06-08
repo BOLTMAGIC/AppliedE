@@ -1,6 +1,13 @@
 package gripe._90.appliede.me.service;
 
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.IOException;
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -54,21 +61,37 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private Set<AEItemKey> knownItemCache;
     /** Cache of EMC values for known AEItemKey instances to avoid repeated ItemStack creation and ProjectE lookups. */
     private final Map<AEItemKey, Long> emcCache = new HashMap<>();
+    // persisted simple string -> long map (key string -> emc) loaded from disk
+    private final Map<String, Long> persistedEmc = new HashMap<>();
+    private final Path emcCacheFile;
+    // cache of created TransmutationPattern objects for known items to avoid allocations on each getPatterns()
+    private final Map<AEItemKey, TransmutationPattern> patternCache = new HashMap<>();
+    private final List<TransmutationPattern> tierPatterns = new ArrayList<>();
+    private int cachedHighestTier = 1;
 
     private boolean needsSync;
     private int ticksSinceLastSync;
 
     public KnowledgeService(IGrid grid) {
         this.grid = grid;
+        emcCacheFile = Paths.get("run", "config", "appliede", "emc_cache.tsv");
+        loadEmcCacheFromDisk();
+
         MinecraftForge.EVENT_BUS.addListener((PlayerKnowledgeChangeEvent event) -> {
             knownItemCache = null;
             emcCache.clear();
+            // clear pattern cache since known items changed
+            patternCache.clear();
+            // clear persisted map as knowledge changed; will be rebuilt on next known items scan
+            persistedEmc.clear();
             updatePatterns();
         });
         MinecraftForge.EVENT_BUS.addListener((OnDatapackSyncEvent event) -> {
             if (event.getPlayer() == null) {
                 knownItemCache = null;
                 emcCache.clear();
+                patternCache.clear();
+                persistedEmc.clear();
                 updatePatterns();
             }
         });
@@ -200,7 +223,14 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                         knownItemCache.add(key);
                         try {
                             var val = IEMCProxy.INSTANCE.getValue(stack);
-                            emcCache.put(key, Long.valueOf(val));
+                            emcCache.put(key, val);
+                            // persist string form for reloads
+                            persistedEmc.put(key.toString(), val);
+                            // best-effort save (do not fail startup if IO fails)
+                            try {
+                                saveEmcCacheToDisk();
+                            } catch (IOException ignored) {
+                            }
                         } catch (Throwable ignored) {
                             // if ProjectE lookup fails, skip caching for this key
                         }
@@ -212,17 +242,77 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         return knownItemCache;
     }
 
-    public List<IPatternDetails> getPatterns(IManagedGridNode node) {
-        if (!moduleNodes.isEmpty() && node.equals(moduleNodes.get(0)) && node.isActive()) {
-            var patterns = new ArrayList<IPatternDetails>();
-
-            for (var tier = storage.getHighestTier(); tier > 1; tier--) {
-                patterns.add(new TransmutationPattern(tier));
+    private void loadEmcCacheFromDisk() {
+        try {
+            var parent = emcCacheFile.getParent();
+            if (parent != null && !Files.exists(parent)) {
+                Files.createDirectories(parent);
             }
 
+            if (!Files.exists(emcCacheFile)) {
+                return;
+            }
+
+            try (BufferedReader r = Files.newBufferedReader(emcCacheFile, StandardCharsets.UTF_8)) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    var idx = line.indexOf('\t');
+                    if (idx <= 0) continue;
+                    var keyStr = line.substring(0, idx);
+                    var valS = line.substring(idx + 1);
+                    try {
+                        var val = Long.parseLong(valS);
+                        persistedEmc.put(keyStr, val);
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+            }
+        } catch (IOException ignored) {
+        }
+    }
+
+    private void saveEmcCacheToDisk() throws IOException {
+        var parent = emcCacheFile.getParent();
+        if (parent != null && !Files.exists(parent)) {
+            Files.createDirectories(parent);
+        }
+
+        try (BufferedWriter w = Files.newBufferedWriter(emcCacheFile, StandardCharsets.UTF_8)) {
+            for (var e : persistedEmc.entrySet()) {
+                w.write(e.getKey());
+                w.write('\t');
+                w.write(Long.toString(e.getValue()));
+                w.newLine();
+            }
+        }
+    }
+
+    public List<IPatternDetails> getPatterns(IManagedGridNode node) {
+        if (!moduleNodes.isEmpty() && node.equals(moduleNodes.get(0)) && node.isActive()) {
+
+            // ensure tier patterns are cached and up-to-date
+            var highest = storage.getHighestTier();
+            if (highest != cachedHighestTier) {
+                tierPatterns.clear();
+                for (var tier = highest; tier > 1; tier--) {
+                    tierPatterns.add(new TransmutationPattern(tier));
+                }
+                cachedHighestTier = highest;
+            }
+
+            var patterns = new ArrayList<IPatternDetails>(tierPatterns);
+
+            // reuse TransmutationPattern objects for known items where possible
             for (var item : getKnownItems()) {
-                var cached = emcCache.get(item);
-                patterns.add(new TransmutationPattern(item, 1, cached));
+                var cachedValue = emcCache.get(item);
+                var pattern = patternCache.get(item);
+
+                if (pattern == null) {
+                    pattern = new TransmutationPattern(item, 1, cachedValue);
+                    patternCache.put(item, pattern);
+                }
+
+                patterns.add(pattern);
             }
 
             patterns.addAll(temporaryPatterns);

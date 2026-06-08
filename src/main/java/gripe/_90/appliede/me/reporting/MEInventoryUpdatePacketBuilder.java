@@ -1,12 +1,12 @@
 package gripe._90.appliede.me.reporting;
 
 import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
-import java.util.Objects;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 import org.jetbrains.annotations.Nullable;
 
@@ -39,8 +39,8 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
     // bounded LRU cache to avoid rebuilding identical full-update packets when the player
     // repeatedly opens the terminal and the underlying grid state did not change.
     private static final int MAX_CACHE_ENTRIES = 64;
-    private static final Map<Long, CacheEntry> PACKET_CACHE = Collections.synchronizedMap(
-            new LinkedHashMap<Long, CacheEntry>(16, 0.75f, true) {
+    private static final Map<Long, CacheEntry> PACKET_CACHE =
+            Collections.synchronizedMap(new LinkedHashMap<Long, CacheEntry>(16, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<Long, CacheEntry> eldest) {
                     return size() > MAX_CACHE_ENTRIES;
@@ -74,7 +74,8 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
             KeyCounter requestables,
             Set<AEItemKey> transmutables) {
         // if this is a full update, attempt to reuse cached packet list for identical grid snapshot
-        int hash = Objects.hash(networkStorage.hashCode(), craftables.hashCode(), requestables.hashCode(), transmutables.hashCode());
+        int hash = Objects.hash(
+                networkStorage.hashCode(), craftables.hashCode(), requestables.hashCode(), transmutables.hashCode());
         if (fullUpdateFlag) {
             long cacheKey = ((long) containerId << 32) ^ (hash & 0xffffffffL);
             var cached = PACKET_CACHE.get(cacheKey);
