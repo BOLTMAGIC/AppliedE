@@ -26,14 +26,25 @@ public final class TransmutationPattern implements IPatternDetails {
     private final int tier;
 
     private final AEItemKey definition;
+    /** Optional cached EMC value for the item - avoids creating ItemStacks and querying ProjectE repeatedly. */
+    private final Long cachedEmc;
 
     public TransmutationPattern(AEItemKey item, long amount) {
+        this(item, amount, null);
+    }
+
+    /**
+     * Construct a pattern while supplying a precomputed EMC value for the item. This allows avoiding
+     * ItemStack creation and ProjectE lookups when we already computed the EMC (e.g. in KnowledgeService).
+     */
+    public TransmutationPattern(AEItemKey item, long amount, Long cachedEmc) {
         tier = 1;
 
         var tag = new CompoundTag();
         tag.put(NBT_ITEM, (this.item = item).toTag());
         tag.putLong(NBT_AMOUNT, this.amount = amount);
         definition = AEItemKey.of(AppliedE.DUMMY_EMC_ITEM.get(), tag);
+        this.cachedEmc = cachedEmc;
     }
 
     public TransmutationPattern(int tier) {
@@ -43,6 +54,7 @@ public final class TransmutationPattern implements IPatternDetails {
         var tag = new CompoundTag();
         tag.putInt(NBT_TIER, this.tier = tier);
         definition = AEItemKey.of(AppliedE.DUMMY_EMC_ITEM.get(), tag);
+        this.cachedEmc = null;
     }
 
     @Override
@@ -57,7 +69,7 @@ public final class TransmutationPattern implements IPatternDetails {
         }
 
         var inputs = new ArrayList<IInput>();
-        var itemEmc = IEMCProxy.INSTANCE.getValue(item.toStack());
+        var itemEmc = cachedEmc != null ? cachedEmc : IEMCProxy.INSTANCE.getValue(item.toStack());
         var totalEmc = BigInteger.valueOf(itemEmc).multiply(BigInteger.valueOf(amount));
         var currentTier = 1;
 

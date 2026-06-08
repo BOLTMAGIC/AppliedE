@@ -1,6 +1,6 @@
 pluginManagement {
     repositories {
-        maven { url = uri("https://maven.neoforged.net/") }
+        maven { url = uri("https://maven.neoforged.net/releases") }
         maven { url = uri("https://maven.parchmentmc.org") }
         gradlePluginPortal()
     }
@@ -19,7 +19,7 @@ dependencyResolutionManagement {
             library("forge", "net.neoforged", "forge").version("$minecraftVersion-47.1.54")
             library("mixin", "org.spongepowered", "mixin").version("0.8.5")
 
-            library("ae2", "appeng", "appliedenergistics2-forge").version("15.1.0")
+            library("ae2", "appeng", "appliedenergistics2-forge").version("15.4.10")
             library("projecte", "curse.maven", "projecte-226410").version("4901949-api-4901951")
 
             library("teampe", "curse.maven", "team-projecte-689273").version("5402805")
@@ -33,7 +33,7 @@ dependencyResolutionManagement {
             library("projectex", "curse.maven", "project-expansion-579177").version("5232445")
             library("jade", "curse.maven", "jade-324717").version("5072729")
             library("spark", "curse.maven", "spark-361579").version("4738952")
-            library("jei", "mezz.jei", "jei-1.20.1-forge").version("15.3.0.4")
+            library("jei", "mezz.jei", "jei-1.20.1-forge").version("15.20.0.130")
         }
     }
 }

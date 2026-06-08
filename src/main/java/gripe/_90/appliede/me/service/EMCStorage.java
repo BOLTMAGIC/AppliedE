@@ -4,7 +4,6 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
@@ -67,8 +66,8 @@ public final class EMCStorage implements MEStorage {
         }
 
         if (mode == Actionable.MODULATE) {
+            // create a mutable snapshot of providers; avoid expensive shuffles - deterministic order
             var providers = new ArrayList<>(service.getProviders());
-            Collections.shuffle(providers);
 
             if (emc.getTier() == 1) {
                 var divisor = service.getProviders().size();
@@ -110,8 +109,8 @@ public final class EMCStorage implements MEStorage {
 
         var providers = getProvidersForExtraction(source);
 
+        // iterate providers in deterministic (snapshot) order; shuffling here was expensive under load
         while (!providers.isEmpty() && extracted.compareTo(rawEmc) < 0) {
-            Collections.shuffle(providers);
 
             var toExtract = rawEmc.subtract(extracted);
             var divisor = BigInteger.valueOf(providers.size());
@@ -181,7 +180,9 @@ public final class EMCStorage implements MEStorage {
         }
 
         if (mode == Actionable.MODULATE) {
-            var itemEmc = BigInteger.valueOf(IEMCProxy.INSTANCE.getSellValue(what.toStack()));
+            // try to use cached EMC value to avoid item stack creation
+            Long cached = service.getCachedEmc(what);
+            var itemEmc = cached != null ? BigInteger.valueOf(cached) : BigInteger.valueOf(IEMCProxy.INSTANCE.getSellValue(what.toStack()));
             var totalEmc = itemEmc.multiply(BigInteger.valueOf(amount));
 
             if (consumePower) {
@@ -193,7 +194,6 @@ public final class EMCStorage implements MEStorage {
             }
 
             var providers = new ArrayList<>(service.getProviders());
-            Collections.shuffle(providers);
             distributeEmc(totalEmc, providers);
             service.syncEmc();
 
@@ -235,7 +235,8 @@ public final class EMCStorage implements MEStorage {
             return 0;
         }
 
-        var itemEmc = BigInteger.valueOf(IEMCProxy.INSTANCE.getValue(what.toStack()));
+        Long cached = service.getCachedEmc(what);
+        var itemEmc = cached != null ? BigInteger.valueOf(cached) : BigInteger.valueOf(IEMCProxy.INSTANCE.getValue(what.toStack()));
 
         if (itemEmc.signum() <= 0) {
             return 0;
@@ -265,7 +266,6 @@ public final class EMCStorage implements MEStorage {
             var withdrawn = BigInteger.ZERO;
 
             while (!providers.isEmpty() && withdrawn.compareTo(availableEmc) < 0) {
-                Collections.shuffle(providers);
 
                 var toWithdraw = availableEmc.subtract(withdrawn);
                 var divisor = BigInteger.valueOf(providers.size());
@@ -323,10 +323,27 @@ public final class EMCStorage implements MEStorage {
 
     private long getAmountAfterPowerExpenditure(BigInteger maxEmc, BigInteger itemEmc) {
         var energyService = service.getGrid().getEnergyService();
+        // Protect against very small transmutation power multipliers which can cause BigDecimal divide-by-zero
+        double cfgMult = AppliedEConfig.CONFIG.getTransmutationPowerMultiplier();
+        final double MIN_TRANS_MULTIPLIER = 0.1d; // below this value the game previously crashed
+        if (cfgMult < MIN_TRANS_MULTIPLIER) {
+            cfgMult = MIN_TRANS_MULTIPLIER;
+        }
+
         var multiplier = BigDecimal.valueOf(PowerMultiplier.CONFIG.multiplier)
-                .multiply(BigDecimal.valueOf(AppliedEConfig.CONFIG.getTransmutationPowerMultiplier()))
+                .multiply(BigDecimal.valueOf(cfgMult))
                 .divide(BigDecimal.valueOf(EMCKeyType.TYPE.getAmountPerOperation()), 4, RoundingMode.HALF_UP);
+
+        // if multiplier is effectively zero (shouldn't happen now due to clamping) bail out safely
+        if (multiplier.compareTo(BigDecimal.ZERO) <= 0) {
+            return 0L;
+        }
+
         var toExpend = new BigDecimal(maxEmc).multiply(multiplier).min(BigDecimal.valueOf(Double.MAX_VALUE));
+
+        if (toExpend.doubleValue() <= 0d) {
+            return 0L;
+        }
 
         var available = energyService.extractAEPower(toExpend.doubleValue(), Actionable.SIMULATE, PowerMultiplier.ONE);
         var expended = Math.min(available, toExpend.doubleValue());

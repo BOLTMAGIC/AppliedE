@@ -52,6 +52,9 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
     private final IGrid grid;
     private Set<AEItemKey> knownItemCache;
+    /** Cache of EMC values for known AEItemKey instances to avoid repeated ItemStack creation and ProjectE lookups. */
+    private final Map<AEItemKey, Long> emcCache = new HashMap<>();
+
     private boolean needsSync;
     private int ticksSinceLastSync;
 
@@ -59,11 +62,13 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         this.grid = grid;
         MinecraftForge.EVENT_BUS.addListener((PlayerKnowledgeChangeEvent event) -> {
             knownItemCache = null;
+            emcCache.clear();
             updatePatterns();
         });
         MinecraftForge.EVENT_BUS.addListener((OnDatapackSyncEvent event) -> {
             if (event.getPlayer() == null) {
                 knownItemCache = null;
+                emcCache.clear();
                 updatePatterns();
             }
         });
@@ -73,6 +78,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     public void addNode(IGridNode gridNode, @Nullable CompoundTag savedData) {
         if (gridNode.getOwner() instanceof EMCModulePart module) {
             knownItemCache = null;
+            emcCache.clear();
             moduleNodes.add(module.getMainNode());
             var uuid = gridNode.getOwningPlayerProfileId();
 
@@ -88,6 +94,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     public void removeNode(IGridNode gridNode) {
         if (gridNode.getOwner() instanceof EMCModulePart module) {
             knownItemCache = null;
+            emcCache.clear();
             moduleNodes.remove(module.getMainNode());
             providers.clear();
             tpeHandler.clear();
@@ -163,6 +170,13 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         return storage;
     }
 
+    /**
+     * Return a cached EMC value for the given AEItemKey if available, otherwise null.
+     */
+    public Long getCachedEmc(AEItemKey key) {
+        return emcCache.get(key);
+    }
+
     public MEStorage getStorage(IManagedGridNode node) {
         return !moduleNodes.isEmpty() && node.equals(moduleNodes.get(0)) && node.isActive()
                 ? storage
@@ -179,10 +193,17 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                         continue;
                     }
 
-                    var key = AEItemKey.of(item.createStack());
+                    var stack = item.createStack();
+                    var key = AEItemKey.of(stack);
 
                     if (key != null) {
                         knownItemCache.add(key);
+                        try {
+                            var val = IEMCProxy.INSTANCE.getValue(stack);
+                            emcCache.put(key, Long.valueOf(val));
+                        } catch (Throwable ignored) {
+                            // if ProjectE lookup fails, skip caching for this key
+                        }
                     }
                 }
             }
@@ -200,7 +221,8 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
             }
 
             for (var item : getKnownItems()) {
-                patterns.add(new TransmutationPattern(item, 1));
+                var cached = emcCache.get(item);
+                patterns.add(new TransmutationPattern(item, 1, cached));
             }
 
             patterns.addAll(temporaryPatterns);
