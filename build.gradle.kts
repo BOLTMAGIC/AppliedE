@@ -99,6 +99,7 @@ dependencies {
     runtimeOnly(fg.deobf(libs.jei.get()))
     runtimeOnly(fg.deobf(libs.jade.get()))
     runtimeOnly(fg.deobf(libs.spark.get()))
+    implementation("it.unimi.dsi:fastutil:8.5.9")
 }
 
 tasks {

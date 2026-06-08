@@ -20,6 +20,8 @@ import java.util.function.Supplier;
 
 import org.jetbrains.annotations.Nullable;
 
+import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
+
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.entity.player.Player;
 import net.minecraftforge.common.MinecraftForge;
@@ -60,7 +62,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private final IGrid grid;
     private Set<AEItemKey> knownItemCache;
     /** Cache of EMC values for known AEItemKey instances to avoid repeated ItemStack creation and ProjectE lookups. */
-    private final Map<AEItemKey, Long> emcCache = new HashMap<>();
+    private final Object2LongOpenHashMap<AEItemKey> emcCache = new Object2LongOpenHashMap<>();
     // persisted simple string -> long map (key string -> emc) loaded from disk
     private final Map<String, Long> persistedEmc = new HashMap<>();
     private final Path emcCacheFile;
@@ -197,7 +199,11 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
      * Return a cached EMC value for the given AEItemKey if available, otherwise null.
      */
     public Long getCachedEmc(AEItemKey key) {
-        return emcCache.get(key);
+        if (emcCache.containsKey(key)) {
+            return emcCache.getLong(key);
+        }
+
+        return null;
     }
 
     public MEStorage getStorage(IManagedGridNode node) {
@@ -221,18 +227,24 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
                     if (key != null) {
                         knownItemCache.add(key);
-                        try {
-                            var val = IEMCProxy.INSTANCE.getValue(stack);
-                            emcCache.put(key, val);
-                            // persist string form for reloads
-                            persistedEmc.put(key.toString(), val);
-                            // best-effort save (do not fail startup if IO fails)
+                        var keyStr = key.toString();
+                        // If we have a persisted value for this key, reuse it to avoid an expensive ProjectE lookup
+                        if (persistedEmc.containsKey(keyStr)) {
+                            emcCache.put(key, persistedEmc.get(keyStr));
+                        } else {
                             try {
-                                saveEmcCacheToDisk();
-                            } catch (IOException ignored) {
+                                var val = IEMCProxy.INSTANCE.getValue(stack);
+                                emcCache.put(key, val);
+                                // persist string form for reloads
+                                persistedEmc.put(keyStr, val);
+                                // best-effort save (do not fail startup if IO fails)
+                                try {
+                                    saveEmcCacheToDisk();
+                                } catch (IOException ignored) {
+                                }
+                            } catch (Throwable ignored) {
+                                // if ProjectE lookup fails, skip caching for this key
                             }
-                        } catch (Throwable ignored) {
-                            // if ProjectE lookup fails, skip caching for this key
                         }
                     }
                 }
@@ -303,13 +315,29 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
             var patterns = new ArrayList<IPatternDetails>(tierPatterns);
 
             // reuse TransmutationPattern objects for known items where possible
-            for (var item : getKnownItems()) {
-                var cachedValue = emcCache.get(item);
+            var known = getKnownItems();
+            // reserve adequate capacity to avoid resizing
+            patterns.ensureCapacity(patterns.size() + known.size() + temporaryPatterns.size());
+
+            for (var item : known) {
+                Long cachedValue = emcCache.containsKey(item) ? emcCache.getLong(item) : null;
                 var pattern = patternCache.get(item);
 
                 if (pattern == null) {
                     pattern = new TransmutationPattern(item, 1, cachedValue);
                     patternCache.put(item, pattern);
+                } else {
+                    // if cached EMC changed since pattern creation, replace the cached pattern with a new one
+                    // (TransmutationPattern is immutable so we must recreate it when EMC changes)
+                    Long prev = patternCache.get(item) != null
+                            ? (emcCache.containsKey(item) ? emcCache.getLong(item) : null)
+                            : null;
+                    // we can't cheaply compare prior cached value stored inside pattern (no accessor), so recreate if
+                    // null vs non-null mismatch
+                    if ((prev == null && cachedValue != null) || (prev != null && !prev.equals(cachedValue))) {
+                        pattern = new TransmutationPattern(item, 1, cachedValue);
+                        patternCache.put(item, pattern);
+                    }
                 }
 
                 patterns.add(pattern);
