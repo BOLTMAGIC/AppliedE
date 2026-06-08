@@ -117,7 +117,7 @@ public final class EMCStorage implements MEStorage {
             var quotient = toExtract.divide(divisor);
             var remainder = toExtract.remainder(divisor).longValue();
 
-            for (var p = 0; p < providers.size(); p++) {
+            for (int p = 0; p < providers.size(); ) {
                 var provider = providers.get(p);
 
                 var currentEmc = provider.getEmc();
@@ -130,13 +130,15 @@ public final class EMCStorage implements MEStorage {
 
                     extracted = extracted.add(currentEmc);
                     // provider exhausted, remove from current list to re-extract deficit from remaining providers
-                    providers.remove(provider);
+                    providers.remove(p);
+                    // do not increment p - next element shifted into current index
                 } else {
                     if (mode == Actionable.MODULATE) {
                         provider.setEmc(currentEmc.subtract(toExtractFrom));
                     }
 
                     extracted = extracted.add(toExtractFrom);
+                    p++;
                 }
             }
         }
@@ -276,7 +278,7 @@ public final class EMCStorage implements MEStorage {
                 var quotient = toWithdraw.divide(divisor);
                 var remainder = toWithdraw.remainder(divisor).longValue();
 
-                for (var p = 0; p < providers.size(); p++) {
+                for (int p = 0; p < providers.size(); ) {
                     var provider = providers.get(p);
 
                     var currentEmc = provider.getEmc();
@@ -286,10 +288,12 @@ public final class EMCStorage implements MEStorage {
                         provider.setEmc(BigInteger.ZERO);
                         withdrawn = withdrawn.add(currentEmc);
                         // provider exhausted, remove from current list to re-extract deficit from remaining providers
-                        providers.remove(provider);
+                        providers.remove(p);
+                        // do not increment p
                     } else {
                         provider.setEmc(currentEmc.subtract(toWithdrawFrom));
                         withdrawn = withdrawn.add(toWithdrawFrom);
+                        p++;
                     }
                 }
             }
@@ -327,36 +331,36 @@ public final class EMCStorage implements MEStorage {
 
     private long getAmountAfterPowerExpenditure(BigInteger maxEmc, BigInteger itemEmc) {
         var energyService = service.getGrid().getEnergyService();
-        // Protect against very small transmutation power multipliers which can cause BigDecimal divide-by-zero
-        double cfgMult = AppliedEConfig.CONFIG.getTransmutationPowerMultiplier();
-        final double MIN_TRANS_MULTIPLIER = 0.1d; // below this value the game previously crashed
-        if (cfgMult < MIN_TRANS_MULTIPLIER) {
-            cfgMult = MIN_TRANS_MULTIPLIER;
-        }
-
+        // Compute transmutation energy multiplier using configuration. Allow values < 0.1 but guard Numerics.
+        var cfgMult = BigDecimal.valueOf(AppliedEConfig.CONFIG.getTransmutationPowerMultiplier());
         var multiplier = BigDecimal.valueOf(PowerMultiplier.CONFIG.multiplier)
-                .multiply(BigDecimal.valueOf(cfgMult))
-                .divide(BigDecimal.valueOf(EMCKeyType.TYPE.getAmountPerOperation()), 4, RoundingMode.HALF_UP);
+                .multiply(cfgMult)
+                .divide(BigDecimal.valueOf(EMCKeyType.TYPE.getAmountPerOperation()), 8, RoundingMode.HALF_UP);
 
-        // if multiplier is effectively zero (shouldn't happen now due to clamping) bail out safely
+        // if multiplier is zero or negative, no transmutation can occur
         if (multiplier.compareTo(BigDecimal.ZERO) <= 0) {
             return 0L;
         }
 
         var toExpend = new BigDecimal(maxEmc).multiply(multiplier).min(BigDecimal.valueOf(Double.MAX_VALUE));
 
-        if (toExpend.doubleValue() <= 0d) {
+        double toExpendDouble = toExpend.doubleValue();
+        // If toExpend underflows to 0.0 when converted to double, attempt a tiny simulate call so
+        // tiny multipliers can still be processed if the energy service supports fractional power.
+        if (toExpendDouble <= 0d) {
+            toExpendDouble = Double.MIN_VALUE;
+        }
+
+        var available = energyService.extractAEPower(toExpendDouble, Actionable.SIMULATE, PowerMultiplier.ONE);
+        var expended = Math.min(available, toExpendDouble);
+
+        if (available <= 0d) {
             return 0L;
         }
 
-        var available = energyService.extractAEPower(toExpend.doubleValue(), Actionable.SIMULATE, PowerMultiplier.ONE);
-        var expended = Math.min(available, toExpend.doubleValue());
-        var amount = BigDecimal.valueOf(available)
-                .min(toExpend)
-                .divide(multiplier, RoundingMode.HALF_UP)
-                .toBigInteger()
-                .divide(itemEmc)
-                .longValue();
+        // possible EMC convertible = min(available, toExpend) / multiplier
+        var possible = BigDecimal.valueOf(available).min(toExpend).divide(multiplier, 8, RoundingMode.HALF_UP);
+        var amount = possible.toBigInteger().divide(itemEmc).longValue();
 
         if (amount > 0) {
             energyService.extractAEPower(expended, Actionable.MODULATE, PowerMultiplier.ONE);

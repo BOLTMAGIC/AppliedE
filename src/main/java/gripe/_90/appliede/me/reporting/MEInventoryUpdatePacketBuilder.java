@@ -3,6 +3,9 @@ package gripe._90.appliede.me.reporting;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import org.jetbrains.annotations.Nullable;
 
@@ -31,6 +34,11 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
 
     private final List<MEInventoryUpdatePacket> packets = new ArrayList<>();
     private final int containerId;
+    private final boolean fullUpdateFlag;
+    // simple in-memory cache to avoid rebuilding identical full-update packets when the player
+    // repeatedly opens the terminal and the underlying grid state did not change.
+    private static final ConcurrentMap<Long, CacheEntry> PACKET_CACHE = new ConcurrentHashMap<>();
+    private static final long CACHE_TTL_MS = 2_000L; // keep cached packets for 2s
 
     @Nullable
     private AEKeyFilter filter;
@@ -44,6 +52,7 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
     public MEInventoryUpdatePacketBuilder(int containerId, boolean fullUpdate) {
         super(containerId, fullUpdate);
         this.containerId = containerId;
+        this.fullUpdateFlag = fullUpdate;
     }
 
     @Override
@@ -57,6 +66,21 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
             Set<AEKey> craftables,
             KeyCounter requestables,
             Set<AEItemKey> transmutables) {
+        // if this is a full update, attempt to reuse cached packet list for identical grid snapshot
+        int hash = Objects.hash(networkStorage.hashCode(), craftables.hashCode(), requestables.hashCode(), transmutables.hashCode());
+        if (fullUpdateFlag) {
+            long cacheKey = ((long) containerId << 32) ^ (hash & 0xffffffffL);
+            var cached = PACKET_CACHE.get(cacheKey);
+
+            if (cached != null && System.currentTimeMillis() - cached.timestamp <= CACHE_TTL_MS) {
+                // reuse cached packets
+                packets.addAll(cached.packets);
+                // nothing to do
+                updateHelper.commitChanges();
+                return;
+            }
+        }
+
         for (AEKey key : updateHelper) {
             if (filter != null && !filter.matches(key)) {
                 continue;
@@ -96,7 +120,13 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
             add(entry);
         }
 
+        // commit and cache if this was a full update
         updateHelper.commitChanges();
+
+        if (fullUpdateFlag) {
+            long cacheKey = ((long) containerId << 32) ^ (hash & 0xffffffffL);
+            PACKET_CACHE.put(cacheKey, new CacheEntry(List.copyOf(packets), System.currentTimeMillis()));
+        }
     }
 
     @Override
@@ -152,5 +182,8 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
     public List<MEInventoryUpdatePacket> build() {
         flushData();
         return packets;
+    }
+
+    private record CacheEntry(List<MEInventoryUpdatePacket> packets, long timestamp) {
     }
 }
