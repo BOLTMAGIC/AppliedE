@@ -73,11 +73,6 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     // Warm queue for serialized AEKey caching. Background thread dedupes and main thread finalizes.
     private final ConcurrentLinkedQueue<appeng.api.stacks.AEKey> warmQueue = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<appeng.api.stacks.AEKey> finalWarmQueue = new ConcurrentLinkedQueue<>();
-    private final ScheduledExecutorService warmExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-        var t = new Thread(r, "appliede-warm-queue");
-        t.setDaemon(true);
-        return t;
-    });
     // cache of created TransmutationPattern objects for known items to avoid allocations on each getPatterns()
     private final Map<AEItemKey, TransmutationPattern> patternCache = new HashMap<>();
     private final List<TransmutationPattern> tierPatterns = new ArrayList<>();
@@ -92,6 +87,11 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         loadEmcCacheFromDisk();
 
         // start background task to aggregate and dedupe warm requests into finalWarmQueue
+        ScheduledExecutorService warmExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+            var t = new Thread(r, "appliede-warm-queue");
+            t.setDaemon(true);
+            return t;
+        });
         warmExecutor.scheduleWithFixedDelay(() -> {
             try {
                 if (warmQueue.isEmpty()) return;
@@ -204,6 +204,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     /**
      * Enqueue an AEKey to be warmed. This is safe to call from any thread.
      */
+    @SuppressWarnings("unused")
     public void warmKey(appeng.api.stacks.AEKey key) {
         if (key == null) return;
         warmQueue.offer(key);
