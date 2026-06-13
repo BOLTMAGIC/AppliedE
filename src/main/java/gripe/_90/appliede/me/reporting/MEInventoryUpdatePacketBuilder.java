@@ -1,10 +1,8 @@
 package gripe._90.appliede.me.reporting;
 
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
+
 import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
 import java.util.Objects;
 import java.util.Set;
@@ -126,6 +124,7 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
                 updateHelper.removeSerial(key);
             } else {
                 entry = new GridInventoryEntry(serial, sendKey, storedAmount, requestable, craftable);
+                //noinspection DataFlowIssue
                 ((GridInventoryEMCEntry) entry).appliede$setTransmutable(transmutable);
             }
 
@@ -206,11 +205,6 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
         return packets;
     }
 
-    private static final class CacheEntry {
-        final List<MEInventoryUpdatePacket> packets;
-
-        CacheEntry(List<MEInventoryUpdatePacket> packets) {
-            this.packets = packets;
-        }
+    private record CacheEntry(List<MEInventoryUpdatePacket> packets) {
     }
 }
