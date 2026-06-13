@@ -80,6 +80,10 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
     private boolean needsSync;
     private int ticksSinceLastSync;
+    // single-threaded IO executor for async/coalesced disk writes
+    private final ScheduledExecutorService ioExecutor;
+    private final java.util.concurrent.atomic.AtomicBoolean saveScheduled = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private static final long SAVE_DEBOUNCE_MILLIS = 1000L;
 
     public KnowledgeService(IGrid grid) {
         this.grid = grid;
@@ -127,6 +131,11 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                 persistedEmc.clear();
                 updatePatterns();
             }
+        });
+        ioExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+            var t = new Thread(r, "appliede-io-executor");
+            t.setDaemon(true);
+            return t;
         });
     }
 
@@ -287,13 +296,9 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                             try {
                                 var val = IEMCProxy.INSTANCE.getValue(stack);
                                 emcCache.put(key, val);
-                                // persist string form for reloads
-                                persistedEmc.put(keyStr, val);
-                                // best-effort save (do not fail startup if IO fails)
-                                try {
-                                    saveEmcCacheToDisk();
-                                } catch (IOException ignored) {
-                                }
+                                 // persist string form for reloads and schedule async/coalesced save
+                                 persistedEmc.put(keyStr, val);
+                                 scheduleSaveEmcCacheToDisk();
                             } catch (Throwable ignored) {
                                 // if ProjectE lookup fails, skip caching for this key
                             }
@@ -341,15 +346,41 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
             Files.createDirectories(parent);
         }
 
-        try (BufferedWriter w = Files.newBufferedWriter(emcCacheFile, StandardCharsets.UTF_8)) {
-            // use primitive entry set to avoid boxing
+        // snapshot persistedEmc to avoid concurrent modification during write
+        java.util.Map<String, Long> snapshot = new java.util.HashMap<>();
+        synchronized (persistedEmc) {
             for (var e : persistedEmc.object2LongEntrySet()) {
+                snapshot.put(e.getKey(), e.getLongValue());
+            }
+        }
+
+        try (BufferedWriter w = Files.newBufferedWriter(emcCacheFile, StandardCharsets.UTF_8)) {
+            for (var e : snapshot.entrySet()) {
                 w.write(e.getKey());
                 w.write('\t');
-                w.write(Long.toString(e.getLongValue()));
+                w.write(Long.toString(e.getValue()));
                 w.newLine();
             }
         }
+    }
+
+    /**
+     * Schedule an async/coalesced save of the persisted EMC cache to disk. Multiple calls within the
+     * debounce window are coalesced into a single write.
+     */
+    private void scheduleSaveEmcCacheToDisk() {
+        if (!saveScheduled.compareAndSet(false, true)) return;
+
+        ioExecutor.schedule(() -> {
+            try {
+                try {
+                    saveEmcCacheToDisk();
+                } catch (IOException ignored) {
+                }
+            } finally {
+                saveScheduled.set(false);
+            }
+        }, SAVE_DEBOUNCE_MILLIS, TimeUnit.MILLISECONDS);
     }
 
     public List<IPatternDetails> getPatterns(IManagedGridNode node) {
