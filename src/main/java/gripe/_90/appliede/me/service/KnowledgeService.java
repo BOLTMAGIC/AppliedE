@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
@@ -74,7 +75,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private final ConcurrentLinkedQueue<appeng.api.stacks.AEKey> warmQueue = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<appeng.api.stacks.AEKey> finalWarmQueue = new ConcurrentLinkedQueue<>();
     // cache of created TransmutationPattern objects for known items to avoid allocations on each getPatterns()
-    private final Map<AEItemKey, TransmutationPattern> patternCache = new HashMap<>();
+    private final Object2ObjectOpenHashMap<AEItemKey, TransmutationPattern> patternCache = new Object2ObjectOpenHashMap<>();
     private final List<TransmutationPattern> tierPatterns = new ArrayList<>();
     private int cachedHighestTier = 1;
 
