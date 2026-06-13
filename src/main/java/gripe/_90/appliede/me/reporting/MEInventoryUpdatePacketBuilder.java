@@ -1,10 +1,9 @@
 package gripe._90.appliede.me.reporting;
 
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
+
+import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
 import java.util.Objects;
 import java.util.Set;
 
@@ -25,10 +24,12 @@ import gripe._90.appliede.mixin.tooltip.BasePacketAccessor;
 import gripe._90.appliede.mixin.tooltip.MEInventoryUpdatePacketAccessor;
 
 import io.netty.buffer.Unpooled;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * See {@link MEInventoryUpdatePacket}
  */
+@SuppressWarnings("unused")
 public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Builder {
     private static final int UNCOMPRESSED_PACKET_BYTE_LIMIT = 512 * 1024;
     private static final int INITIAL_BUFFER_CAPACITY = 2 * 1024;
@@ -39,13 +40,10 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
     // bounded LRU cache to avoid rebuilding identical full-update packets when the player
     // repeatedly opens the terminal and the underlying grid state did not change.
     private static final int MAX_CACHE_ENTRIES = 64;
-    private static final Map<Long, CacheEntry> PACKET_CACHE =
-            Collections.synchronizedMap(new LinkedHashMap<Long, CacheEntry>(16, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<Long, CacheEntry> eldest) {
-                    return size() > MAX_CACHE_ENTRIES;
-                }
-            });
+    // use a primitive long-keyed fastutil linked map for lower overhead; synchronize manually
+    private static final Long2ObjectLinkedOpenHashMap<CacheEntry> PACKET_CACHE = new Long2ObjectLinkedOpenHashMap<>();
+    private static final LongAdder PACKET_CACHE_HITS = new LongAdder();
+    private static final LongAdder PACKET_CACHE_MISSES = new LongAdder();
 
     @Nullable
     private AEKeyFilter filter;
@@ -78,7 +76,16 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
                 networkStorage.hashCode(), craftables.hashCode(), requestables.hashCode(), transmutables.hashCode());
         if (fullUpdateFlag) {
             long cacheKey = ((long) containerId << 32) ^ (hash & 0xffffffffL);
-            var cached = PACKET_CACHE.get(cacheKey);
+            CacheEntry cached;
+            synchronized (PACKET_CACHE) {
+                cached = PACKET_CACHE.get(cacheKey);
+                if (cached != null) {
+                    PACKET_CACHE_HITS.increment();
+                    // move to most-recent by re-inserting
+                    PACKET_CACHE.remove(cacheKey);
+                    PACKET_CACHE.put(cacheKey, cached);
+                }
+            }
 
             if (cached != null) {
                 // reuse cached packets
@@ -122,6 +129,7 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
                 updateHelper.removeSerial(key);
             } else {
                 entry = new GridInventoryEntry(serial, sendKey, storedAmount, requestable, craftable);
+                //noinspection DataFlowIssue
                 ((GridInventoryEMCEntry) entry).appliede$setTransmutable(transmutable);
             }
 
@@ -133,7 +141,18 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
 
         if (fullUpdateFlag) {
             long cacheKey = ((long) containerId << 32) ^ (hash & 0xffffffffL);
-            PACKET_CACHE.put(cacheKey, new CacheEntry(List.copyOf(packets)));
+            synchronized (PACKET_CACHE) {
+                PACKET_CACHE_MISSES.increment();
+                PACKET_CACHE.put(cacheKey, new CacheEntry(List.copyOf(packets)));
+                if (PACKET_CACHE.size() > MAX_CACHE_ENTRIES) {
+                    // evict eldest entry (iterator returns insertion order)
+                    var it = PACKET_CACHE.keySet().iterator();
+                    if (it.hasNext()) {
+                        long eldest = it.nextLong();
+                        PACKET_CACHE.remove(eldest);
+                    }
+                }
+            }
         }
     }
 
@@ -192,11 +211,20 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
         return packets;
     }
 
-    private static final class CacheEntry {
-        final List<MEInventoryUpdatePacket> packets;
+    private record CacheEntry(List<MEInventoryUpdatePacket> packets) {
+    }
 
-        CacheEntry(List<MEInventoryUpdatePacket> packets) {
-            this.packets = packets;
+    public static int getPacketCacheSize() {
+        synchronized (PACKET_CACHE) {
+            return PACKET_CACHE.size();
         }
+    }
+
+    public static long getPacketCacheHits() {
+        return PACKET_CACHE_HITS.sum();
+    }
+
+    public static long getPacketCacheMisses() {
+        return PACKET_CACHE_MISSES.sum();
     }
 }

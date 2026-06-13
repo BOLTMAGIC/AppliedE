@@ -10,7 +10,7 @@ plugins {
 val modId = "appliede"
 
 base.archivesName = modId
-version = System.getenv("APPE_VERSION") ?: "0.14.4"
+version = System.getenv("APPE_VERSION") ?: "0.14.5"
 group = "gripe.90"
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(17)

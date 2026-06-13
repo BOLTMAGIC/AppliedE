@@ -17,6 +17,10 @@ public class AppliedEConfig {
     private final ForgeConfigSpec.IntValue emcPerByte;
     private final ForgeConfigSpec.BooleanValue terminalExtractFromOwnEmcOnly;
     private final ForgeConfigSpec.IntValue syncThrottleInterval;
+    private final ForgeConfigSpec.IntValue keyCacheMax;
+        private final ForgeConfigSpec.IntValue warmKeysPerTick;
+        private final ForgeConfigSpec.IntValue saveDebounceMillis;
+        private final ForgeConfigSpec.IntValue patternMinUpdateInterval;
 
     private AppliedEConfig(ForgeConfigSpec.Builder builder) {
         moduleEnergyUsage = builder.comment("The amount of AE energy per tick used by the ME Transmutation Module.")
@@ -36,6 +40,23 @@ public class AppliedEConfig {
         syncThrottleInterval = builder.comment(
                         "How many ticks to wait before the next player EMC sync when manipulating stored EMC.")
                 .defineInRange("syncThrottleInterval", 20, 1, 200);
+        keyCacheMax = builder.comment(
+                        "Maximum number of serialized AEKey entries to keep in the in-memory LRU KEY_CACHE (GridInventory)")
+                .defineInRange("keyCacheMax", 2048, 1, Integer.MAX_VALUE);
+        warmKeysPerTick = builder.comment(
+                        "How many keys to finalize (warm) per server tick from the background warm queue to avoid single-tick spikes")
+                .defineInRange("warmKeysPerTick", 16, 0, Integer.MAX_VALUE);
+        saveDebounceMillis = builder.comment(
+                        "Debounce interval in milliseconds for coalesced async saves of the persisted EMC cache to disk")
+                .defineInRange("saveDebounceMillis", 1000, 0, Integer.MAX_VALUE);
+        // Minimum number of ticks to wait between consecutive calls to requestUpdate() per node
+        // Helps avoid thundering-herd of pattern updates across many nodes
+        builder.comment("Minimum number of server ticks to wait between pattern update requests per node");
+        builder.push("patterns");
+        patternMinUpdateInterval = builder.comment(
+                        "Minimum ticks between ICraftingProvider.requestUpdate() calls for the same node")
+                .defineInRange("patternMinUpdateInterval", 20, 0, Integer.MAX_VALUE);
+        builder.pop();
     }
 
     public double getModuleEnergyUsage() {
@@ -56,6 +77,22 @@ public class AppliedEConfig {
 
     public int getSyncThrottleInterval() {
         return syncThrottleInterval.get();
+    }
+
+    public int getKeyCacheMax() {
+        return keyCacheMax.get();
+    }
+
+    public int getWarmKeysPerTick() {
+        return warmKeysPerTick.get();
+    }
+
+    public int getSaveDebounceMillis() {
+        return saveDebounceMillis.get();
+    }
+
+    public int getPatternMinUpdateInterval() {
+        return patternMinUpdateInterval.get();
     }
 
     public static class Client {

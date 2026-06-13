@@ -183,9 +183,9 @@ public final class EMCStorage implements MEStorage {
 
         if (mode == Actionable.MODULATE) {
             // try to use cached EMC value to avoid item stack creation
-            Long cached = service.getCachedEmc(what);
-            var itemEmc = cached != null
-                    ? BigInteger.valueOf(cached)
+            var cachedOpt = service.getCachedEmcPrimitive(what);
+            var itemEmc = cachedOpt.isPresent()
+                    ? BigInteger.valueOf(cachedOpt.getAsLong())
                     : BigInteger.valueOf(IEMCProxy.INSTANCE.getSellValue(what.toStack()));
             var totalEmc = itemEmc.multiply(BigInteger.valueOf(amount));
 
@@ -239,9 +239,9 @@ public final class EMCStorage implements MEStorage {
             return 0;
         }
 
-        Long cached = service.getCachedEmc(what);
-        var itemEmc = cached != null
-                ? BigInteger.valueOf(cached)
+        var cachedOpt = service.getCachedEmcPrimitive(what);
+        var itemEmc = cachedOpt.isPresent()
+                ? BigInteger.valueOf(cachedOpt.getAsLong())
                 : BigInteger.valueOf(IEMCProxy.INSTANCE.getValue(what.toStack()));
 
         if (itemEmc.signum() <= 0) {
