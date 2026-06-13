@@ -63,8 +63,8 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private Set<AEItemKey> knownItemCache;
     /** Cache of EMC values for known AEItemKey instances to avoid repeated ItemStack creation and ProjectE lookups. */
     private final Object2LongOpenHashMap<AEItemKey> emcCache = new Object2LongOpenHashMap<>();
-    // persisted simple string -> long map (key string -> emc) loaded from disk
-    private final Map<String, Long> persistedEmc = new HashMap<>();
+    // persisted simple string -> long map (key string -> emc) loaded from disk (primitive long to avoid boxing)
+    private final Object2LongOpenHashMap<String> persistedEmc = new Object2LongOpenHashMap<>();
     private final Path emcCacheFile;
     // cache of created TransmutationPattern objects for known items to avoid allocations on each getPatterns()
     private final Map<AEItemKey, TransmutationPattern> patternCache = new HashMap<>();
@@ -230,7 +230,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                         var keyStr = key.toString();
                         // If we have a persisted value for this key, reuse it to avoid an expensive ProjectE lookup
                         if (persistedEmc.containsKey(keyStr)) {
-                            emcCache.put(key, persistedEmc.get(keyStr));
+                            emcCache.put(key, persistedEmc.getLong(keyStr));
                         } else {
                             try {
                                 var val = IEMCProxy.INSTANCE.getValue(stack);
@@ -290,10 +290,11 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         }
 
         try (BufferedWriter w = Files.newBufferedWriter(emcCacheFile, StandardCharsets.UTF_8)) {
-            for (var e : persistedEmc.entrySet()) {
+            // use primitive entry set to avoid boxing
+            for (var e : persistedEmc.object2LongEntrySet()) {
                 w.write(e.getKey());
                 w.write('\t');
-                w.write(Long.toString(e.getValue()));
+                w.write(Long.toString(e.getLongValue()));
                 w.newLine();
             }
         }
