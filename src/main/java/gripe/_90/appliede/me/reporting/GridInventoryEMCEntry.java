@@ -11,6 +11,7 @@ import gripe._90.appliede.AppliedEConfig;
 import appeng.api.stacks.AEKey;
 import appeng.menu.me.common.GridInventoryEntry;
 
+@SuppressWarnings("unused")
 public interface GridInventoryEMCEntry {
     boolean appliede$isTransmutable();
 
@@ -104,6 +105,21 @@ public interface GridInventoryEMCEntry {
                     KEY_CACHE.remove(eldest);
                 }
             }
+        }
+    }
+
+    // Simple accessors for instrumentation
+    static long getKeyCacheHits() {
+        return KEY_CACHE_HITS.sum();
+    }
+
+    static long getKeyCacheMisses() {
+        return KEY_CACHE_MISSES.sum();
+    }
+
+    static int getKeyCacheSize() {
+        synchronized (KEY_CACHE) {
+            return KEY_CACHE.size();
         }
     }
 }

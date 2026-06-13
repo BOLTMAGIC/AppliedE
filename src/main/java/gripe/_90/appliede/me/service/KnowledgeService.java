@@ -55,6 +55,7 @@ import moze_intel.projecte.api.event.PlayerKnowledgeChangeEvent;
 import moze_intel.projecte.api.proxy.IEMCProxy;
 import moze_intel.projecte.api.proxy.ITransmutationProxy;
 
+@SuppressWarnings("unused")
 public class KnowledgeService implements IGridService, IGridServiceProvider {
     private static final int TICKS_PER_SYNC = AppliedEConfig.CONFIG.getSyncThrottleInterval();
 
@@ -91,7 +92,12 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     // single-threaded IO executor for async/coalesced disk writes
     private final ScheduledExecutorService ioExecutor;
     private final java.util.concurrent.atomic.AtomicBoolean saveScheduled = new java.util.concurrent.atomic.AtomicBoolean(false);
-    private static final long SAVE_DEBOUNCE_MILLIS = 1000L;
+    // debounce interval is now configurable via AppliedEConfig
+
+    // One-time startup seeding flags: when we load a persisted EMC TSV we mark that we should
+    // attempt to enqueue warm requests for matching known items on the main thread in small batches.
+    private boolean startupSeedQueued = false;
+    private boolean startupSeeded = false;
 
     public KnowledgeService(IGrid grid) {
         this.grid = grid;
@@ -202,6 +208,37 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         }
 
         // finalize a bounded number of warm keys per tick to avoid spikes
+        // perform a one-time startup seed from persisted EMC strings into the warm queue
+        if (startupSeedQueued && !startupSeeded) {
+            try {
+                var providersList = getProviders();
+                // build a small seed list of AEKeys that appear in persistedEmc (bounded to avoid long work)
+                var seeded = 0;
+                final int MAX_SEED = 10000;
+                for (var provider : providersList) {
+                    for (var item : provider.getKnowledge()) {
+                        if (seeded >= MAX_SEED) break;
+                        try {
+                            var stack = item.createStack();
+                            var key = AEItemKey.of(stack);
+                            if (key == null) continue;
+                            var keyStr = key.toString();
+                            if (persistedEmc.containsKey(keyStr)) {
+                                warmQueue.offer(key);
+                                seeded++;
+                            }
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                    if (seeded >= MAX_SEED) break;
+                }
+            } catch (Throwable ignored) {
+            } finally {
+                startupSeeded = true;
+                startupSeedQueued = false;
+            }
+        }
+
         var toProcess = AppliedEConfig.CONFIG.getWarmKeysPerTick();
         for (int i = 0; i < toProcess; i++) {
             var key = finalWarmQueue.poll();
@@ -362,6 +399,10 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                     }
                 }
             }
+            // mark that we should attempt a startup seed of warm keys for items that we have persisted values for
+            if (!persistedEmc.isEmpty()) {
+                startupSeedQueued = true;
+            }
         } catch (IOException ignored) {
         }
     }
@@ -406,7 +447,32 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
             } finally {
                 saveScheduled.set(false);
             }
-        }, SAVE_DEBOUNCE_MILLIS, TimeUnit.MILLISECONDS);
+        }, AppliedEConfig.CONFIG.getSaveDebounceMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    // Instrumentation getters to aid debugging and tuning
+    public int getPersistedEmcSize() {
+        return persistedEmc.size();
+    }
+
+    public int getEmcCacheSize() {
+        return emcCache.size();
+    }
+
+    public int getWarmQueueSize() {
+        return warmQueue.size();
+    }
+
+    public int getFinalWarmQueueSize() {
+        return finalWarmQueue.size();
+    }
+
+    public int getPatternCacheSize() {
+        return patternCache.size();
+    }
+
+    public int getKeyStringCacheSize() {
+        return keyStringCache.size();
     }
 
     public List<IPatternDetails> getPatterns(IManagedGridNode node) {

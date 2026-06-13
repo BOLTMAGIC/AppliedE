@@ -19,6 +19,7 @@ public class AppliedEConfig {
     private final ForgeConfigSpec.IntValue syncThrottleInterval;
     private final ForgeConfigSpec.IntValue keyCacheMax;
         private final ForgeConfigSpec.IntValue warmKeysPerTick;
+        private final ForgeConfigSpec.IntValue saveDebounceMillis;
 
     private AppliedEConfig(ForgeConfigSpec.Builder builder) {
         moduleEnergyUsage = builder.comment("The amount of AE energy per tick used by the ME Transmutation Module.")
@@ -44,6 +45,9 @@ public class AppliedEConfig {
         warmKeysPerTick = builder.comment(
                         "How many keys to finalize (warm) per server tick from the background warm queue to avoid single-tick spikes")
                 .defineInRange("warmKeysPerTick", 16, 0, Integer.MAX_VALUE);
+        saveDebounceMillis = builder.comment(
+                        "Debounce interval in milliseconds for coalesced async saves of the persisted EMC cache to disk")
+                .defineInRange("saveDebounceMillis", 1000, 0, Integer.MAX_VALUE);
     }
 
     public double getModuleEnergyUsage() {
@@ -72,6 +76,10 @@ public class AppliedEConfig {
 
     public int getWarmKeysPerTick() {
         return warmKeysPerTick.get();
+    }
+
+    public int getSaveDebounceMillis() {
+        return saveDebounceMillis.get();
     }
 
     public static class Client {

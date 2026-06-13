@@ -24,10 +24,12 @@ import gripe._90.appliede.mixin.tooltip.BasePacketAccessor;
 import gripe._90.appliede.mixin.tooltip.MEInventoryUpdatePacketAccessor;
 
 import io.netty.buffer.Unpooled;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * See {@link MEInventoryUpdatePacket}
  */
+@SuppressWarnings("unused")
 public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Builder {
     private static final int UNCOMPRESSED_PACKET_BYTE_LIMIT = 512 * 1024;
     private static final int INITIAL_BUFFER_CAPACITY = 2 * 1024;
@@ -40,6 +42,8 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
     private static final int MAX_CACHE_ENTRIES = 64;
     // use a primitive long-keyed fastutil linked map for lower overhead; synchronize manually
     private static final Long2ObjectLinkedOpenHashMap<CacheEntry> PACKET_CACHE = new Long2ObjectLinkedOpenHashMap<>();
+    private static final LongAdder PACKET_CACHE_HITS = new LongAdder();
+    private static final LongAdder PACKET_CACHE_MISSES = new LongAdder();
 
     @Nullable
     private AEKeyFilter filter;
@@ -76,6 +80,7 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
             synchronized (PACKET_CACHE) {
                 cached = PACKET_CACHE.get(cacheKey);
                 if (cached != null) {
+                    PACKET_CACHE_HITS.increment();
                     // move to most-recent by re-inserting
                     PACKET_CACHE.remove(cacheKey);
                     PACKET_CACHE.put(cacheKey, cached);
@@ -137,6 +142,7 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
         if (fullUpdateFlag) {
             long cacheKey = ((long) containerId << 32) ^ (hash & 0xffffffffL);
             synchronized (PACKET_CACHE) {
+                PACKET_CACHE_MISSES.increment();
                 PACKET_CACHE.put(cacheKey, new CacheEntry(List.copyOf(packets)));
                 if (PACKET_CACHE.size() > MAX_CACHE_ENTRIES) {
                     // evict eldest entry (iterator returns insertion order)
@@ -206,5 +212,19 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
     }
 
     private record CacheEntry(List<MEInventoryUpdatePacket> packets) {
+    }
+
+    public static int getPacketCacheSize() {
+        synchronized (PACKET_CACHE) {
+            return PACKET_CACHE.size();
+        }
+    }
+
+    public static long getPacketCacheHits() {
+        return PACKET_CACHE_HITS.sum();
+    }
+
+    public static long getPacketCacheMisses() {
+        return PACKET_CACHE_MISSES.sum();
     }
 }
