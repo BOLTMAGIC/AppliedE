@@ -100,6 +100,8 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private int serverTickCounter = 0;
     // track last pattern update tick per node to avoid frequent repeated requestUpdate() calls
     private final java.util.WeakHashMap<IManagedGridNode, Integer> lastPatternUpdateTick = new java.util.WeakHashMap<>();
+    // fingerprint of published patterns per node to suppress unchanged updates
+    private final java.util.WeakHashMap<IManagedGridNode, Integer> lastPublishedFingerprint = new java.util.WeakHashMap<>();
 
     public KnowledgeService(IGrid grid) {
         this.grid = grid;
@@ -583,14 +585,48 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
         for (var node : moduleNodes) {
             try {
+                // compute a lightweight fingerprint of the current patterns state
+                int fp = computePatternsFingerprint(node);
+                var lastFp = lastPublishedFingerprint.get(node);
+
+                if (lastFp != null && lastFp == fp) {
+                    // no visible change for this node: skip update
+                    continue;
+                }
+
                 var last = lastPatternUpdateTick.getOrDefault(node, Integer.MIN_VALUE);
                 if (serverTickCounter - last >= minInterval) {
                     ICraftingProvider.requestUpdate(node);
                     lastPatternUpdateTick.put(node, serverTickCounter);
+                    lastPublishedFingerprint.put(node, fp);
                 }
             } catch (Throwable ignored) {
             }
         }
+    }
+
+    /**
+     * Compute a deterministic, lightweight fingerprint for the current pattern state that is
+     * cheap enough to compute frequently and sufficient to detect most visible changes.
+     */
+    private int computePatternsFingerprint(IManagedGridNode node) {
+        int h = 1;
+        // include tier & temporary patterns sizes
+        h = 31 * h + tierPatterns.size();
+        h = 31 * h + temporaryPatterns.size();
+
+        // include knowledge set and cached EMC (cheap: uses emcCache and knownItemCache)
+        var known = getKnownItems();
+        for (var item : known) {
+            h = 31 * h + item.hashCode();
+            if (emcCache.containsKey(item)) {
+                h = 31 * h + Long.hashCode(emcCache.getLong(item));
+            } else {
+                h = 31 * h;
+            }
+        }
+
+        return h;
     }
 
     /** Force an immediate requestUpdate() for all nodes (bypasses throttle). */
