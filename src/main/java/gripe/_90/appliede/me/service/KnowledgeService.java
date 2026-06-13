@@ -282,6 +282,17 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         return null;
     }
 
+    /**
+     * Return a cached EMC value as a primitive OptionalLong to avoid boxing in hot paths.
+     */
+    public java.util.OptionalLong getCachedEmcPrimitive(AEItemKey key) {
+        if (emcCache.containsKey(key)) {
+            return java.util.OptionalLong.of(emcCache.getLong(key));
+        }
+
+        return java.util.OptionalLong.empty();
+    }
+
     public MEStorage getStorage(IManagedGridNode node) {
         return !moduleNodes.isEmpty() && node.equals(moduleNodes.get(0)) && node.isActive()
                 ? storage
