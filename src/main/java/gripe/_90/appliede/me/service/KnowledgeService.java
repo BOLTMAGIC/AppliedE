@@ -26,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import org.jetbrains.annotations.Nullable;
 
 import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
+import java.util.LinkedHashMap;
 
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.entity.player.Player;
@@ -71,6 +72,13 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     // persisted simple string -> long map (key string -> emc) loaded from disk (primitive long to avoid boxing)
     private final Object2LongOpenHashMap<String> persistedEmc = new Object2LongOpenHashMap<>();
     private final Path emcCacheFile;
+    // LRU cache for AEItemKey -> String to avoid repeated toString() allocations in hot loops
+    private final Map<AEItemKey, String> keyStringCache = Collections.synchronizedMap(new LinkedHashMap<AEItemKey, String>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<AEItemKey, String> eldest) {
+            return size() > AppliedEConfig.CONFIG.getKeyCacheMax();
+        }
+    });
     // Warm queue for serialized AEKey caching. Background thread dedupes and main thread finalizes.
     private final ConcurrentLinkedQueue<appeng.api.stacks.AEKey> warmQueue = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<appeng.api.stacks.AEKey> finalWarmQueue = new ConcurrentLinkedQueue<>();
@@ -289,7 +297,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
                     if (key != null) {
                         knownItemCache.add(key);
-                        var keyStr = key.toString();
+                        var keyStr = keyStringCache.computeIfAbsent(key, AEItemKey::toString);
                         // If we have a persisted value for this key, reuse it to avoid an expensive ProjectE lookup
                         if (persistedEmc.containsKey(keyStr)) {
                             emcCache.put(key, persistedEmc.getLong(keyStr));
