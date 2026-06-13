@@ -3,6 +3,7 @@ package gripe._90.appliede.me.reporting;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.LongAdder;
 
 import io.netty.buffer.Unpooled;
 import net.minecraft.network.FriendlyByteBuf;
@@ -41,8 +42,10 @@ public interface GridInventoryEMCEntry {
             warmKey(what);
             var bytes = KEY_CACHE.get(what);
             if (bytes != null) {
+                KEY_CACHE_HITS.increment();
                 buffer.writeBytes(bytes);
             } else {
+                KEY_CACHE_MISSES.increment();
                 AEKey.writeOptionalKey(buffer, what);
             }
         } else {
@@ -64,13 +67,20 @@ public interface GridInventoryEMCEntry {
         }
     });
 
+    // Simple hit/miss counters for the KEY_CACHE to aid tuning
+    LongAdder KEY_CACHE_HITS = new LongAdder();
+    LongAdder KEY_CACHE_MISSES = new LongAdder();
+
     /**
      * Precompute and cache the serialized bytes for an AEKey using the same format as
      * AEKey.writeOptionalKey(FriendlyByteBuf). Safe to call repeatedly.
      */
     static void warmKey(AEKey key) {
         if (key == null) return;
-        if (KEY_CACHE.containsKey(key)) return;
+        if (KEY_CACHE.containsKey(key)) {
+            KEY_CACHE_HITS.increment();
+            return;
+        }
 
         var tmp = new FriendlyByteBuf(Unpooled.buffer(256));
         AEKey.writeOptionalKey(tmp, key);
