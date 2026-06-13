@@ -17,6 +17,7 @@ public class AppliedEConfig {
     private final ForgeConfigSpec.IntValue emcPerByte;
     private final ForgeConfigSpec.BooleanValue terminalExtractFromOwnEmcOnly;
     private final ForgeConfigSpec.IntValue syncThrottleInterval;
+    private final ForgeConfigSpec.IntValue keyCacheMax;
 
     private AppliedEConfig(ForgeConfigSpec.Builder builder) {
         moduleEnergyUsage = builder.comment("The amount of AE energy per tick used by the ME Transmutation Module.")
@@ -36,6 +37,9 @@ public class AppliedEConfig {
         syncThrottleInterval = builder.comment(
                         "How many ticks to wait before the next player EMC sync when manipulating stored EMC.")
                 .defineInRange("syncThrottleInterval", 20, 1, 200);
+        keyCacheMax = builder.comment(
+                        "Maximum number of serialized AEKey entries to keep in the in-memory LRU KEY_CACHE (GridInventory)")
+                .defineInRange("keyCacheMax", 2048, 1, Integer.MAX_VALUE);
     }
 
     public double getModuleEnergyUsage() {
@@ -56,6 +60,10 @@ public class AppliedEConfig {
 
     public int getSyncThrottleInterval() {
         return syncThrottleInterval.get();
+    }
+
+    public int getKeyCacheMax() {
+        return keyCacheMax.get();
     }
 
     public static class Client {

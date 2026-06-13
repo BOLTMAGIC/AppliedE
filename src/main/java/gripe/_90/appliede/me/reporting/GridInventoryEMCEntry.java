@@ -7,6 +7,8 @@ import java.util.Map;
 import io.netty.buffer.Unpooled;
 import net.minecraft.network.FriendlyByteBuf;
 
+import gripe._90.appliede.AppliedEConfig;
+
 import appeng.api.stacks.AEKey;
 import appeng.menu.me.common.GridInventoryEntry;
 
@@ -54,7 +56,7 @@ public interface GridInventoryEMCEntry {
 
     // Simple bounded LRU cache for serialized AEKey byte forms to reduce allocations when writing
     // entries frequently (synchronized for simplicity; accesses are cheap and on server thread).
-    int KEY_CACHE_MAX = 2048;
+    int KEY_CACHE_MAX = AppliedEConfig.CONFIG.getKeyCacheMax();
     Map<AEKey, byte[]> KEY_CACHE = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<AEKey, byte[]> eldest) {
