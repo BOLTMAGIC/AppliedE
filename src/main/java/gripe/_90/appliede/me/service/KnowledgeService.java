@@ -17,6 +17,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import org.jetbrains.annotations.Nullable;
 
@@ -66,6 +70,14 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     // persisted simple string -> long map (key string -> emc) loaded from disk (primitive long to avoid boxing)
     private final Object2LongOpenHashMap<String> persistedEmc = new Object2LongOpenHashMap<>();
     private final Path emcCacheFile;
+    // Warm queue for serialized AEKey caching. Background thread dedupes and main thread finalizes.
+    private final ConcurrentLinkedQueue<appeng.api.stacks.AEKey> warmQueue = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<appeng.api.stacks.AEKey> finalWarmQueue = new ConcurrentLinkedQueue<>();
+    private final ScheduledExecutorService warmExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+        var t = new Thread(r, "appliede-warm-queue");
+        t.setDaemon(true);
+        return t;
+    });
     // cache of created TransmutationPattern objects for known items to avoid allocations on each getPatterns()
     private final Map<AEItemKey, TransmutationPattern> patternCache = new HashMap<>();
     private final List<TransmutationPattern> tierPatterns = new ArrayList<>();
@@ -78,6 +90,25 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         this.grid = grid;
         emcCacheFile = Paths.get("run", "config", "appliede", "emc_cache.tsv");
         loadEmcCacheFromDisk();
+
+        // start background task to aggregate and dedupe warm requests into finalWarmQueue
+        warmExecutor.scheduleWithFixedDelay(() -> {
+            try {
+                if (warmQueue.isEmpty()) return;
+                var dedup = new java.util.LinkedHashSet<appeng.api.stacks.AEKey>();
+                appeng.api.stacks.AEKey k;
+                while ((k = warmQueue.poll()) != null) {
+                    dedup.add(k);
+                    if (dedup.size() >= 1024) break; // limit per aggregation to avoid long background runs
+                }
+
+                for (var key : dedup) {
+                    finalWarmQueue.offer(key);
+                }
+            } catch (Throwable t) {
+                // best effort; swallow to avoid scheduler termination
+            }
+        }, 100, 100, TimeUnit.MILLISECONDS);
 
         MinecraftForge.EVENT_BUS.addListener((PlayerKnowledgeChangeEvent event) -> {
             knownItemCache = null;
@@ -152,10 +183,30 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
             needsSync = false;
             ticksSinceLastSync = 0;
         }
+
+        // finalize a bounded number of warm keys per tick to avoid spikes
+        var toProcess = AppliedEConfig.CONFIG.getWarmKeysPerTick();
+        for (int i = 0; i < toProcess; i++) {
+            var key = finalWarmQueue.poll();
+            if (key == null) break;
+            try {
+                // perform actual serialization/cache fill on main thread
+                gripe._90.appliede.me.reporting.GridInventoryEMCEntry.warmKey(key);
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     private void addProvider(UUID playerUUID) {
         providers.putIfAbsent(playerUUID, retrieveProvider(playerUUID));
+    }
+
+    /**
+     * Enqueue an AEKey to be warmed. This is safe to call from any thread.
+     */
+    public void warmKey(appeng.api.stacks.AEKey key) {
+        if (key == null) return;
+        warmQueue.offer(key);
     }
 
     static Supplier<IKnowledgeProvider> retrieveProvider(UUID playerUUID) {
