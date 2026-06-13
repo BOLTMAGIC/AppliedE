@@ -15,6 +15,7 @@ import gripe._90.appliede.AppliedE;
 import gripe._90.appliede.me.key.EMCKey;
 
 import moze_intel.projecte.api.proxy.IEMCProxy;
+import org.jetbrains.annotations.NotNull;
 
 public final class TransmutationPattern implements IPatternDetails {
     private static final String NBT_ITEM = "item";
@@ -28,6 +29,9 @@ public final class TransmutationPattern implements IPatternDetails {
     private final AEItemKey definition;
     /** Optional cached EMC value for the item - avoids creating ItemStacks and querying ProjectE repeatedly. */
     private final Long cachedEmc;
+    // cached inputs/outputs to avoid repeated allocations for patterns that are reused
+    private final IInput[] cachedInputs;
+    private final GenericStack[] cachedOutputs;
 
     public TransmutationPattern(AEItemKey item, long amount) {
         this(item, amount, null);
@@ -45,6 +49,31 @@ public final class TransmutationPattern implements IPatternDetails {
         tag.putLong(NBT_AMOUNT, this.amount = amount);
         definition = AEItemKey.of(AppliedE.DUMMY_EMC_ITEM.get(), tag);
         this.cachedEmc = cachedEmc;
+        // precompute outputs always
+        this.cachedOutputs = new GenericStack[] {new GenericStack(item, amount)};
+
+        // precompute inputs only when cached EMC is provided
+        if (cachedEmc != null) {
+            var inputs = getIInputs(amount, cachedEmc);
+            this.cachedInputs = inputs.toArray(new IInput[0]);
+        } else {
+            this.cachedInputs = null;
+        }
+    }
+
+    private static @NotNull ArrayList<IInput> getIInputs(long amount, Long cachedEmc) {
+        var inputs = new ArrayList<IInput>();
+        var totalEmc = BigInteger.valueOf(cachedEmc).multiply(BigInteger.valueOf(amount));
+        var currentTier = 1;
+
+        while (totalEmc.divide(AppliedE.TIER_LIMIT).signum() == 1) {
+            inputs.add(new Input(totalEmc.remainder(AppliedE.TIER_LIMIT).longValue(), currentTier));
+            totalEmc = totalEmc.divide(AppliedE.TIER_LIMIT);
+            currentTier++;
+        }
+
+        inputs.add(new Input(totalEmc.longValue(), currentTier));
+        return inputs;
     }
 
     public TransmutationPattern(int tier) {
@@ -55,6 +84,9 @@ public final class TransmutationPattern implements IPatternDetails {
         tag.putInt(NBT_TIER, this.tier = tier);
         definition = AEItemKey.of(AppliedE.DUMMY_EMC_ITEM.get(), tag);
         this.cachedEmc = null;
+        // tier patterns: precompute inputs and outputs
+        this.cachedOutputs = new GenericStack[] {new GenericStack(EMCKey.tier(tier - 1), AppliedE.TIER_LIMIT.longValue())};
+        this.cachedInputs = new IInput[] {new Input(1, tier)};
     }
 
     @Override
@@ -64,6 +96,10 @@ public final class TransmutationPattern implements IPatternDetails {
 
     @Override
     public IInput[] getInputs() {
+        if (cachedInputs != null) {
+            return cachedInputs;
+        }
+
         if (item == null) {
             return new IInput[] {new Input(1, tier)};
         }
@@ -86,6 +122,7 @@ public final class TransmutationPattern implements IPatternDetails {
 
     @Override
     public GenericStack[] getOutputs() {
+        if (cachedOutputs != null) return cachedOutputs;
         return new GenericStack[] {
             item != null
                     ? new GenericStack(item, amount)

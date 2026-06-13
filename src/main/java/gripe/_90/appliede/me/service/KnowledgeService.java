@@ -73,7 +73,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private final Object2LongOpenHashMap<String> persistedEmc = new Object2LongOpenHashMap<>();
     private final Path emcCacheFile;
     // LRU cache for AEItemKey -> String to avoid repeated toString() allocations in hot loops
-    private final Map<AEItemKey, String> keyStringCache = Collections.synchronizedMap(new LinkedHashMap<AEItemKey, String>(16, 0.75f, true) {
+    private final Map<AEItemKey, String> keyStringCache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<AEItemKey, String> eldest) {
             return size() > AppliedEConfig.CONFIG.getKeyCacheMax();
