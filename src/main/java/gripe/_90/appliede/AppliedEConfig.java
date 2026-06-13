@@ -20,6 +20,7 @@ public class AppliedEConfig {
     private final ForgeConfigSpec.IntValue keyCacheMax;
         private final ForgeConfigSpec.IntValue warmKeysPerTick;
         private final ForgeConfigSpec.IntValue saveDebounceMillis;
+        private final ForgeConfigSpec.IntValue patternMinUpdateInterval;
 
     private AppliedEConfig(ForgeConfigSpec.Builder builder) {
         moduleEnergyUsage = builder.comment("The amount of AE energy per tick used by the ME Transmutation Module.")
@@ -48,6 +49,14 @@ public class AppliedEConfig {
         saveDebounceMillis = builder.comment(
                         "Debounce interval in milliseconds for coalesced async saves of the persisted EMC cache to disk")
                 .defineInRange("saveDebounceMillis", 1000, 0, Integer.MAX_VALUE);
+        // Minimum number of ticks to wait between consecutive calls to requestUpdate() per node
+        // Helps avoid thundering-herd of pattern updates across many nodes
+        builder.comment("Minimum number of server ticks to wait between pattern update requests per node");
+        builder.push("patterns");
+        patternMinUpdateInterval = builder.comment(
+                        "Minimum ticks between ICraftingProvider.requestUpdate() calls for the same node")
+                .defineInRange("patternMinUpdateInterval", 20, 0, Integer.MAX_VALUE);
+        builder.pop();
     }
 
     public double getModuleEnergyUsage() {
@@ -80,6 +89,10 @@ public class AppliedEConfig {
 
     public int getSaveDebounceMillis() {
         return saveDebounceMillis.get();
+    }
+
+    public int getPatternMinUpdateInterval() {
+        return patternMinUpdateInterval.get();
     }
 
     public static class Client {

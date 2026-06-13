@@ -12,7 +12,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.atomic.LongAdder;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import java.util.Set;
@@ -26,7 +25,6 @@ import java.util.concurrent.TimeUnit;
 import org.jetbrains.annotations.Nullable;
 
 import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
-import java.util.LinkedHashMap;
 
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.entity.player.Player;
@@ -98,6 +96,10 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     // attempt to enqueue warm requests for matching known items on the main thread in small batches.
     private boolean startupSeedQueued = false;
     private boolean startupSeeded = false;
+    // simple server tick counter maintained from onServerStartTick()
+    private int serverTickCounter = 0;
+    // track last pattern update tick per node to avoid frequent repeated requestUpdate() calls
+    private final java.util.WeakHashMap<IManagedGridNode, Integer> lastPatternUpdateTick = new java.util.WeakHashMap<>();
 
     public KnowledgeService(IGrid grid) {
         this.grid = grid;
@@ -165,7 +167,8 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                 addProvider(uuid);
             }
 
-            updatePatterns();
+            // node was added; ensure crafting providers are updated immediately for correctness
+            forceUpdatePatterns();
         }
     }
 
@@ -191,12 +194,15 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
             }
 
             moduleNodes.forEach(IStorageProvider::requestUpdate);
-            updatePatterns();
+            // node removed; force immediate update so providers reflect current nodes
+            forceUpdatePatterns();
         }
     }
 
     @Override
     public void onServerStartTick() {
+        // increment server tick counter
+        serverTickCounter++;
         if (ticksSinceLastSync < TICKS_PER_SYNC) {
             ticksSinceLastSync++;
         }
@@ -557,15 +563,38 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
     public void addTemporaryPattern(IPatternDetails pattern) {
         temporaryPatterns.add(pattern);
-        updatePatterns();
+        // temporary patterns must be visible immediately for crafting
+        forceUpdatePatterns();
     }
 
     public void removeTemporaryPattern(IPatternDetails pattern) {
         temporaryPatterns.remove(pattern);
-        updatePatterns();
+        forceUpdatePatterns();
     }
 
     void updatePatterns() {
+        // Throttle per-node pattern update requests to avoid thundering-herd
+        int minInterval = AppliedEConfig.CONFIG.getPatternMinUpdateInterval();
+        if (minInterval <= 0) {
+            // disabled: call immediately
+            moduleNodes.forEach(ICraftingProvider::requestUpdate);
+            return;
+        }
+
+        for (var node : moduleNodes) {
+            try {
+                var last = lastPatternUpdateTick.getOrDefault(node, Integer.MIN_VALUE);
+                if (serverTickCounter - last >= minInterval) {
+                    ICraftingProvider.requestUpdate(node);
+                    lastPatternUpdateTick.put(node, serverTickCounter);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** Force an immediate requestUpdate() for all nodes (bypasses throttle). */
+    void forceUpdatePatterns() {
         moduleNodes.forEach(ICraftingProvider::requestUpdate);
     }
 
