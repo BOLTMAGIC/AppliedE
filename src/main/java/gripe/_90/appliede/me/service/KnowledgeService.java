@@ -10,7 +10,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -60,7 +59,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private static final int TICKS_PER_SYNC = AppliedEConfig.CONFIG.getSyncThrottleInterval();
 
     private final List<IManagedGridNode> moduleNodes = new ArrayList<>();
-    private final Map<UUID, Supplier<IKnowledgeProvider>> providers = new HashMap<>();
+    private final Object2ObjectOpenHashMap<UUID, Supplier<IKnowledgeProvider>> providers = new Object2ObjectOpenHashMap<>();
     private final EMCStorage storage = new EMCStorage(this);
     private final List<IPatternDetails> temporaryPatterns = new ArrayList<>();
     private final TeamProjectEHandler.Proxy tpeHandler = new TeamProjectEHandler.Proxy();
@@ -216,7 +215,9 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     }
 
     private void addProvider(UUID playerUUID) {
-        providers.putIfAbsent(playerUUID, retrieveProvider(playerUUID));
+        if (!providers.containsKey(playerUUID)) {
+            providers.put(playerUUID, retrieveProvider(playerUUID));
+        }
     }
 
     /**
@@ -239,11 +240,16 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     }
 
     List<IKnowledgeProvider> getProviders() {
-        return providers.values().stream().map(Supplier::get).toList();
+        var out = new ArrayList<IKnowledgeProvider>(providers.size());
+        for (var s : providers.values()) {
+            out.add(s.get());
+        }
+        return out;
     }
 
     public Supplier<IKnowledgeProvider> getProviderFor(UUID uuid) {
-        return providers.getOrDefault(uuid, tpeHandler.getProviderFor(uuid));
+        var s = providers.get(uuid);
+        return s != null ? s : tpeHandler.getProviderFor(uuid);
     }
 
     Supplier<IKnowledgeProvider> getProviderFor(Player player) {
