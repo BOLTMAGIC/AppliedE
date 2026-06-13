@@ -13,6 +13,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.LongAdder;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import java.util.Set;
 import java.util.UUID;
@@ -73,12 +74,11 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private final Object2LongOpenHashMap<String> persistedEmc = new Object2LongOpenHashMap<>();
     private final Path emcCacheFile;
     // LRU cache for AEItemKey -> String to avoid repeated toString() allocations in hot loops
-    private final Map<AEItemKey, String> keyStringCache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<AEItemKey, String> eldest) {
-            return size() > AppliedEConfig.CONFIG.getKeyCacheMax();
-        }
-    });
+    // Converted to fastutil linked map with manual synchronization to avoid boxed iteration overhead
+    private final it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap<AEItemKey, String> keyStringCache
+            = new it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap<>();
+    private final LongAdder KEY_STRING_CACHE_HITS = new LongAdder();
+    private final LongAdder KEY_STRING_CACHE_MISSES = new LongAdder();
     // Warm queue for serialized AEKey caching. Background thread dedupes and main thread finalizes.
     private final ConcurrentLinkedQueue<appeng.api.stacks.AEKey> warmQueue = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<appeng.api.stacks.AEKey> finalWarmQueue = new ConcurrentLinkedQueue<>();
@@ -351,7 +351,28 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
                     if (key != null) {
                         knownItemCache.add(key);
-                        var keyStr = keyStringCache.computeIfAbsent(key, AEItemKey::toString);
+                        String keyStr;
+                        synchronized (keyStringCache) {
+                            if (keyStringCache.containsKey(key)) {
+                                KEY_STRING_CACHE_HITS.increment();
+                                // move to MRU
+                                var v = keyStringCache.get(key);
+                                keyStringCache.remove(key);
+                                keyStringCache.put(key, v);
+                                keyStr = v;
+                            } else {
+                                KEY_STRING_CACHE_MISSES.increment();
+                                keyStr = key.toString();
+                                keyStringCache.put(key, keyStr);
+                                if (keyStringCache.size() > AppliedEConfig.CONFIG.getKeyCacheMax()) {
+                                    var it = keyStringCache.keySet().iterator();
+                                    if (it.hasNext()) {
+                                        var eldest = it.next();
+                                        keyStringCache.remove(eldest);
+                                    }
+                                }
+                            }
+                        }
                         // If we have a persisted value for this key, reuse it to avoid an expensive ProjectE lookup
                         if (persistedEmc.containsKey(keyStr)) {
                             emcCache.put(key, persistedEmc.getLong(keyStr));
@@ -473,6 +494,14 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
     public int getKeyStringCacheSize() {
         return keyStringCache.size();
+    }
+
+    public long getKeyStringCacheHits() {
+        return KEY_STRING_CACHE_HITS.sum();
+    }
+
+    public long getKeyStringCacheMisses() {
+        return KEY_STRING_CACHE_MISSES.sum();
     }
 
     public List<IPatternDetails> getPatterns(IManagedGridNode node) {
