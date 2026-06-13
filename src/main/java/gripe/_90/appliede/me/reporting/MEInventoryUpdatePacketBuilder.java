@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
 import java.util.Objects;
 import java.util.Set;
 
@@ -39,13 +40,8 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
     // bounded LRU cache to avoid rebuilding identical full-update packets when the player
     // repeatedly opens the terminal and the underlying grid state did not change.
     private static final int MAX_CACHE_ENTRIES = 64;
-    private static final Map<Long, CacheEntry> PACKET_CACHE =
-            Collections.synchronizedMap(new LinkedHashMap<Long, CacheEntry>(16, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<Long, CacheEntry> eldest) {
-                    return size() > MAX_CACHE_ENTRIES;
-                }
-            });
+    // use a primitive long-keyed fastutil linked map for lower overhead; synchronize manually
+    private static final Long2ObjectLinkedOpenHashMap<CacheEntry> PACKET_CACHE = new Long2ObjectLinkedOpenHashMap<>();
 
     @Nullable
     private AEKeyFilter filter;
@@ -78,7 +74,15 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
                 networkStorage.hashCode(), craftables.hashCode(), requestables.hashCode(), transmutables.hashCode());
         if (fullUpdateFlag) {
             long cacheKey = ((long) containerId << 32) ^ (hash & 0xffffffffL);
-            var cached = PACKET_CACHE.get(cacheKey);
+            CacheEntry cached;
+            synchronized (PACKET_CACHE) {
+                cached = PACKET_CACHE.get(cacheKey);
+                if (cached != null) {
+                    // move to most-recent by re-inserting
+                    PACKET_CACHE.remove(cacheKey);
+                    PACKET_CACHE.put(cacheKey, cached);
+                }
+            }
 
             if (cached != null) {
                 // reuse cached packets
@@ -133,7 +137,17 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
 
         if (fullUpdateFlag) {
             long cacheKey = ((long) containerId << 32) ^ (hash & 0xffffffffL);
-            PACKET_CACHE.put(cacheKey, new CacheEntry(List.copyOf(packets)));
+            synchronized (PACKET_CACHE) {
+                PACKET_CACHE.put(cacheKey, new CacheEntry(List.copyOf(packets)));
+                if (PACKET_CACHE.size() > MAX_CACHE_ENTRIES) {
+                    // evict eldest entry (iterator returns insertion order)
+                    var it = PACKET_CACHE.keySet().iterator();
+                    if (it.hasNext()) {
+                        long eldest = it.nextLong();
+                        PACKET_CACHE.remove(eldest);
+                    }
+                }
+            }
         }
     }
 
