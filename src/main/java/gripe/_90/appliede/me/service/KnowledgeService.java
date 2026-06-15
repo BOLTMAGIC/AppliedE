@@ -87,8 +87,13 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
     private boolean needsSync;
     private int ticksSinceLastSync;
-    // single-threaded IO executor for async/coalesced disk writes
-    private final ScheduledExecutorService ioExecutor;
+    // Shared scheduled executor used for lightweight background tasks to avoid creating
+    // an executor per KnowledgeService instance (which can exhaust native threads).
+    private static final ScheduledExecutorService SHARED_SCHEDULER = Executors.newScheduledThreadPool(2, r -> {
+        var t = new Thread(r, "appliede-shared-scheduler");
+        t.setDaemon(true);
+        return t;
+    });
     private final java.util.concurrent.atomic.AtomicBoolean saveScheduled = new java.util.concurrent.atomic.AtomicBoolean(false);
     // debounce interval is now configurable via AppliedEConfig
 
@@ -109,12 +114,8 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         loadEmcCacheFromDisk();
 
         // start background task to aggregate and dedupe warm requests into finalWarmQueue
-        ScheduledExecutorService warmExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-            var t = new Thread(r, "appliede-warm-queue");
-            t.setDaemon(true);
-            return t;
-        });
-        warmExecutor.scheduleWithFixedDelay(() -> {
+        // Use shared scheduler to avoid allocating one thread per KnowledgeService instance.
+        SHARED_SCHEDULER.scheduleWithFixedDelay(() -> {
             try {
                 if (warmQueue.isEmpty()) return;
                 var dedup = new java.util.LinkedHashSet<appeng.api.stacks.AEKey>();
@@ -139,7 +140,8 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
             patternCache.clear();
             // clear persisted map as knowledge changed; will be rebuilt on next known items scan
             persistedEmc.clear();
-            updatePatterns();
+            // Knowledge changed: force immediate pattern update so AE2 sees new transmutations
+            forceUpdatePatterns();
         });
         MinecraftForge.EVENT_BUS.addListener((OnDatapackSyncEvent event) -> {
             if (event.getPlayer() == null) {
@@ -147,14 +149,12 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                 emcCache.clear();
                 patternCache.clear();
                 persistedEmc.clear();
-                updatePatterns();
+                // Datapack sync affects knowledge; ensure immediate refresh
+                forceUpdatePatterns();
             }
         });
-        ioExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-            var t = new Thread(r, "appliede-io-executor");
-            t.setDaemon(true);
-            return t;
-        });
+        // Note: io tasks also run on the shared scheduler to avoid per-instance threads.
+        // (No per-instance executor allocation.)
     }
 
     @Override
@@ -467,7 +467,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private void scheduleSaveEmcCacheToDisk() {
         if (!saveScheduled.compareAndSet(false, true)) return;
 
-        ioExecutor.schedule(() -> {
+        SHARED_SCHEDULER.schedule(() -> {
             try {
                 try {
                     saveEmcCacheToDisk();
