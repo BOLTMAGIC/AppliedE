@@ -110,7 +110,9 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
     public KnowledgeService(IGrid grid) {
         this.grid = grid;
-        emcCacheFile = Paths.get("run", "config", "appliede", "emc_cache.tsv");
+        // Persisted EMC cache location: move from top-level run/ to config/AppliedeE/ to avoid
+        // creating a run folder in the repository root. This keeps runtime files under config.
+        emcCacheFile = Paths.get("config", "AppliedeE", "emc_cache.tsv");
         loadEmcCacheFromDisk();
 
         // start background task to aggregate and dedupe warm requests into finalWarmQueue

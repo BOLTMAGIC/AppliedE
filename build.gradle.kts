@@ -10,7 +10,7 @@ plugins {
 val modId = "appliede"
 
 base.archivesName = modId
-version = System.getenv("APPE_VERSION") ?: "0.14.5-fix1"
+version = System.getenv("APPE_VERSION") ?: "0.14.5-fix2"
 group = "gripe.90"
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(17)
@@ -60,7 +60,8 @@ minecraft {
 
     runs {
         configureEach {
-            workingDirectory(file("run"))
+            // Use config/AppliedeE as the working directory instead of creating a top-level "run" folder
+            workingDirectory(file("config/AppliedeE"))
             property("forge.logging.console.level", "debug")
 
             mods {
@@ -71,7 +72,7 @@ minecraft {
         }
 
         create("client")
-        create("server") { workingDirectory(file("run/server")) }
+        create("server") { workingDirectory(file("config/AppliedeE/server")) }
     }
 }
 
