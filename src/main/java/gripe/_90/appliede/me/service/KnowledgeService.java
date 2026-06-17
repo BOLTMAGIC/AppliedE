@@ -23,7 +23,6 @@ import java.util.function.Supplier;
 
 import org.jetbrains.annotations.Nullable;
 
-import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 
 import net.minecraft.nbt.CompoundTag;
@@ -68,9 +67,12 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private final IGrid grid;
     private Set<AEItemKey> knownItemCache;
     /** Cache of EMC values for known AEItemKey instances to avoid repeated ItemStack creation and ProjectE lookups. */
-    private final Object2LongOpenHashMap<AEItemKey> emcCache = new Object2LongOpenHashMap<>();
-    // persisted simple string -> long map (key string -> emc) loaded from disk (primitive long to avoid boxing)
-    private final Object2LongOpenHashMap<String> persistedEmc = new Object2LongOpenHashMap<>();
+    // Use BigInteger here to match ProjectE / provider EMC semantics and avoid overflow when EMC exceeds Long.MAX_VALUE
+    private final Object2ObjectOpenHashMap<AEItemKey, java.math.BigInteger> emcCache =
+            new Object2ObjectOpenHashMap<>();
+    // persisted simple string -> BigInteger map (key string -> emc) loaded from disk
+    private final Object2ObjectOpenHashMap<String, java.math.BigInteger> persistedEmc =
+            new Object2ObjectOpenHashMap<>();
     private final Path emcCacheFile;
     // LRU cache for AEItemKey -> String to avoid repeated toString() allocations in hot loops
     // Converted to fastutil linked map with manual synchronization to avoid boxed iteration overhead
@@ -330,23 +332,21 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     /**
      * Return a cached EMC value for the given AEItemKey if available, otherwise null.
      */
-    public Long getCachedEmc(AEItemKey key) {
+    public java.math.BigInteger getCachedEmc(AEItemKey key) {
         if (emcCache.containsKey(key)) {
-            return emcCache.getLong(key);
+            return emcCache.get(key);
         }
 
         return null;
     }
 
-    /**
-     * Return a cached EMC value as a primitive OptionalLong to avoid boxing in hot paths.
-     */
-    public java.util.OptionalLong getCachedEmcPrimitive(AEItemKey key) {
+    /** Return a cached EMC value as Optional<BigInteger> to avoid lossy conversion/overflow. */
+    public java.util.Optional<java.math.BigInteger> getCachedEmcOptional(AEItemKey key) {
         if (emcCache.containsKey(key)) {
-            return java.util.OptionalLong.of(emcCache.getLong(key));
+            return java.util.Optional.of(emcCache.get(key));
         }
 
-        return java.util.OptionalLong.empty();
+        return java.util.Optional.empty();
     }
 
     public MEStorage getStorage(IManagedGridNode node) {
@@ -394,13 +394,14 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                         }
                         // If we have a persisted value for this key, reuse it to avoid an expensive ProjectE lookup
                         if (persistedEmc.containsKey(keyStr)) {
-                            emcCache.put(key, persistedEmc.getLong(keyStr));
+                            emcCache.put(key, persistedEmc.get(keyStr));
                         } else {
                             try {
                                 var val = IEMCProxy.INSTANCE.getValue(stack);
-                                emcCache.put(key, val);
+                                var big = java.math.BigInteger.valueOf(val);
+                                emcCache.put(key, big);
                                 // persist string form for reloads and schedule async/coalesced save
-                                persistedEmc.put(keyStr, val);
+                                persistedEmc.put(keyStr, big);
                                 scheduleSaveEmcCacheToDisk();
                             } catch (Throwable ignored) {
                                 // if ProjectE lookup fails, skip caching for this key
@@ -433,7 +434,8 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                     var keyStr = line.substring(0, idx);
                     var valS = line.substring(idx + 1);
                     try {
-                        var val = Long.parseLong(valS);
+                        // persisted values are stored as decimal strings for arbitrary precision
+                        var val = new java.math.BigInteger(valS);
                         persistedEmc.put(keyStr, val);
                     } catch (NumberFormatException ignored) {
                     }
@@ -454,10 +456,10 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         }
 
         // snapshot persistedEmc to avoid concurrent modification during write
-        java.util.Map<String, Long> snapshot = new java.util.HashMap<>();
+        java.util.Map<String, java.math.BigInteger> snapshot = new java.util.HashMap<>();
         synchronized (persistedEmc) {
-            for (var e : persistedEmc.object2LongEntrySet()) {
-                snapshot.put(e.getKey(), e.getLongValue());
+            for (var e : persistedEmc.object2ObjectEntrySet()) {
+                snapshot.put(e.getKey(), e.getValue());
             }
         }
 
@@ -465,7 +467,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
             for (var e : snapshot.entrySet()) {
                 w.write(e.getKey());
                 w.write('\t');
-                w.write(Long.toString(e.getValue()));
+                w.write(e.getValue().toString());
                 w.newLine();
             }
         }
@@ -547,26 +549,10 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
             patterns.ensureCapacity(patterns.size() + known.size() + temporaryPatterns.size());
 
             for (var item : known) {
-                Long cachedValue = emcCache.containsKey(item) ? emcCache.getLong(item) : null;
-                var pattern = patternCache.get(item);
-
-                if (pattern == null) {
-                    pattern = new TransmutationPattern(item, 1, cachedValue);
-                    patternCache.put(item, pattern);
-                } else {
-                    // if cached EMC changed since pattern creation, replace the cached pattern with a new one
-                    // (TransmutationPattern is immutable so we must recreate it when EMC changes)
-                    Long prev = patternCache.get(item) != null
-                            ? (emcCache.containsKey(item) ? emcCache.getLong(item) : null)
-                            : null;
-                    // we can't cheaply compare prior cached value stored inside pattern (no accessor), so recreate if
-                    // null vs non-null mismatch
-                    if ((prev == null && cachedValue != null) || (prev != null && !prev.equals(cachedValue))) {
-                        pattern = new TransmutationPattern(item, 1, cachedValue);
-                        patternCache.put(item, pattern);
-                    }
-                }
-
+                java.math.BigInteger cachedValue = emcCache.getOrDefault(item, null);
+                // recreate pattern based on current cached EMC (avoids needing an accessor on TransmutationPattern)
+                var pattern = new TransmutationPattern(item, 1, cachedValue);
+                patternCache.put(item, pattern);
                 patterns.add(pattern);
             }
 
@@ -634,7 +620,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         for (var item : known) {
             h = 31 * h + item.hashCode();
             if (emcCache.containsKey(item)) {
-                h = 31 * h + Long.hashCode(emcCache.getLong(item));
+                h = 31 * h + emcCache.get(item).hashCode();
             } else {
                 h = 31 * h;
             }

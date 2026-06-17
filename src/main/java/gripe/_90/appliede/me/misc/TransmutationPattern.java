@@ -29,7 +29,7 @@ public final class TransmutationPattern implements IPatternDetails {
 
     private final AEItemKey definition;
     /** Optional cached EMC value for the item - avoids creating ItemStacks and querying ProjectE repeatedly. */
-    private final Long cachedEmc;
+    private final java.math.BigInteger cachedEmc;
     // cached inputs/outputs to avoid repeated allocations for patterns that are reused
     private final IInput[] cachedInputs;
     private final GenericStack[] cachedOutputs;
@@ -42,7 +42,7 @@ public final class TransmutationPattern implements IPatternDetails {
      * Construct a pattern while supplying a precomputed EMC value for the item. This allows avoiding
      * ItemStack creation and ProjectE lookups when we already computed the EMC (e.g. in KnowledgeService).
      */
-    public TransmutationPattern(AEItemKey item, long amount, Long cachedEmc) {
+    public TransmutationPattern(AEItemKey item, long amount, java.math.BigInteger cachedEmc) {
         tier = 1;
 
         var tag = new CompoundTag();
@@ -62,9 +62,9 @@ public final class TransmutationPattern implements IPatternDetails {
         }
     }
 
-    private static @NotNull ArrayList<IInput> getIInputs(long amount, Long cachedEmc) {
+    private static @NotNull ArrayList<IInput> getIInputs(long amount, java.math.BigInteger cachedEmc) {
         var inputs = new ArrayList<IInput>();
-        var totalEmc = BigInteger.valueOf(cachedEmc).multiply(BigInteger.valueOf(amount));
+        var totalEmc = cachedEmc.multiply(BigInteger.valueOf(amount));
         var currentTier = 1;
 
         while (totalEmc.divide(AppliedE.TIER_LIMIT).signum() == 1) {
@@ -107,8 +107,8 @@ public final class TransmutationPattern implements IPatternDetails {
         }
 
         var inputs = new ArrayList<IInput>();
-        var itemEmc = cachedEmc != null ? cachedEmc : IEMCProxy.INSTANCE.getValue(item.toStack());
-        var totalEmc = BigInteger.valueOf(itemEmc).multiply(BigInteger.valueOf(amount));
+        var itemEmc = cachedEmc != null ? cachedEmc : BigInteger.valueOf(IEMCProxy.INSTANCE.getValue(item.toStack()));
+        var totalEmc = itemEmc.multiply(BigInteger.valueOf(amount));
         var currentTier = 1;
 
         while (totalEmc.divide(AppliedE.TIER_LIMIT).signum() == 1) {
