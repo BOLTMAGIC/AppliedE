@@ -68,8 +68,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private Set<AEItemKey> knownItemCache;
     /** Cache of EMC values for known AEItemKey instances to avoid repeated ItemStack creation and ProjectE lookups. */
     // Use BigInteger here to match ProjectE / provider EMC semantics and avoid overflow when EMC exceeds Long.MAX_VALUE
-    private final Object2ObjectOpenHashMap<AEItemKey, java.math.BigInteger> emcCache =
-            new Object2ObjectOpenHashMap<>();
+    private final Object2ObjectOpenHashMap<AEItemKey, java.math.BigInteger> emcCache = new Object2ObjectOpenHashMap<>();
     // persisted simple string -> BigInteger map (key string -> emc) loaded from disk
     private final Object2ObjectOpenHashMap<String, java.math.BigInteger> persistedEmc =
             new Object2ObjectOpenHashMap<>();
