@@ -1,15 +1,17 @@
 package gripe._90.appliede.me.reporting;
 
-import it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap;
 import java.util.concurrent.atomic.LongAdder;
 
-import io.netty.buffer.Unpooled;
-import net.minecraft.network.FriendlyByteBuf;
+import it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap;
 
-import gripe._90.appliede.AppliedEConfig;
+import net.minecraft.network.FriendlyByteBuf;
 
 import appeng.api.stacks.AEKey;
 import appeng.menu.me.common.GridInventoryEntry;
+
+import gripe._90.appliede.AppliedEConfig;
+
+import io.netty.buffer.Unpooled;
 
 @SuppressWarnings("unused")
 public interface GridInventoryEMCEntry {
@@ -37,25 +39,25 @@ public interface GridInventoryEMCEntry {
         // Try to use cached serialized AEKey bytes to avoid repeated AEKey -> buffer serialization
         var what = entry.getWhat();
         if (what != null) {
-                    // ensure a cached serialization exists (warm if necessary)
-                    warmKey(what);
-                    byte[] bytes;
-                    synchronized (KEY_CACHE) {
-                        bytes = KEY_CACHE.get(what);
-                        if (bytes != null) {
-                            // move to most-recent by reinserting
-                            KEY_CACHE.remove(what);
-                            KEY_CACHE.put(what, bytes);
-                        }
-                    }
+            // ensure a cached serialization exists (warm if necessary)
+            warmKey(what);
+            byte[] bytes;
+            synchronized (KEY_CACHE) {
+                bytes = KEY_CACHE.get(what);
+                if (bytes != null) {
+                    // move to most-recent by reinserting
+                    KEY_CACHE.remove(what);
+                    KEY_CACHE.put(what, bytes);
+                }
+            }
 
-                    if (bytes != null) {
-                        KEY_CACHE_HITS.increment();
-                        buffer.writeBytes(bytes);
-                    } else {
-                        KEY_CACHE_MISSES.increment();
-                        AEKey.writeOptionalKey(buffer, what);
-                    }
+            if (bytes != null) {
+                KEY_CACHE_HITS.increment();
+                buffer.writeBytes(bytes);
+            } else {
+                KEY_CACHE_MISSES.increment();
+                AEKey.writeOptionalKey(buffer, what);
+            }
         } else {
             AEKey.writeOptionalKey(buffer, null);
         }

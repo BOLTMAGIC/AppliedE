@@ -3,6 +3,8 @@ package gripe._90.appliede.me.misc;
 import java.math.BigInteger;
 import java.util.ArrayList;
 
+import org.jetbrains.annotations.NotNull;
+
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.level.Level;
 
@@ -15,7 +17,6 @@ import gripe._90.appliede.AppliedE;
 import gripe._90.appliede.me.key.EMCKey;
 
 import moze_intel.projecte.api.proxy.IEMCProxy;
-import org.jetbrains.annotations.NotNull;
 
 public final class TransmutationPattern implements IPatternDetails {
     private static final String NBT_ITEM = "item";
@@ -85,7 +86,8 @@ public final class TransmutationPattern implements IPatternDetails {
         definition = AEItemKey.of(AppliedE.DUMMY_EMC_ITEM.get(), tag);
         this.cachedEmc = null;
         // tier patterns: precompute inputs and outputs
-        this.cachedOutputs = new GenericStack[] {new GenericStack(EMCKey.tier(tier - 1), AppliedE.TIER_LIMIT.longValue())};
+        this.cachedOutputs =
+                new GenericStack[] {new GenericStack(EMCKey.tier(tier - 1), AppliedE.TIER_LIMIT.longValue())};
         this.cachedInputs = new IInput[] {new Input(1, tier)};
     }
 

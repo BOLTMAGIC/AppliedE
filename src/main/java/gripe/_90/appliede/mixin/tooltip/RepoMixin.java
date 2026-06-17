@@ -36,14 +36,18 @@ public abstract class RepoMixin {
             GridInventoryEntry serverEntry, CallbackInfo ci, GridInventoryEntry localEntry) {
         ci.cancel();
 
+        var what = localEntry.getWhat() != null ? localEntry.getWhat() : serverEntry.getWhat();
         var entry = new GridInventoryEntry(
                 serverEntry.getSerial(),
-                localEntry.getWhat(),
+                what,
                 serverEntry.getStoredAmount(),
                 serverEntry.getRequestableAmount(),
                 serverEntry.isCraftable());
-        ((GridInventoryEMCEntry) entry)
-                .appliede$setTransmutable(((GridInventoryEMCEntry) serverEntry).appliede$isTransmutable());
+        boolean transmutable = false;
+        if (serverEntry instanceof GridInventoryEMCEntry emcEntry) {
+            transmutable = emcEntry.appliede$isTransmutable();
+        }
+        ((GridInventoryEMCEntry) entry).appliede$setTransmutable(transmutable);
         entries.put(serverEntry.getSerial(), entry);
     }
 }

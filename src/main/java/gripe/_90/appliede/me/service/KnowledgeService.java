@@ -12,19 +12,19 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
-import java.util.concurrent.atomic.LongAdder;
-import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import java.util.Set;
 import java.util.UUID;
-import java.util.function.Supplier;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.LongAdder;
+import java.util.function.Supplier;
 
 import org.jetbrains.annotations.Nullable;
 
 import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.entity.player.Player;
@@ -59,7 +59,8 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private static final int TICKS_PER_SYNC = AppliedEConfig.CONFIG.getSyncThrottleInterval();
 
     private final List<IManagedGridNode> moduleNodes = new ArrayList<>();
-    private final Object2ObjectOpenHashMap<UUID, Supplier<IKnowledgeProvider>> providers = new Object2ObjectOpenHashMap<>();
+    private final Object2ObjectOpenHashMap<UUID, Supplier<IKnowledgeProvider>> providers =
+            new Object2ObjectOpenHashMap<>();
     private final EMCStorage storage = new EMCStorage(this);
     private final List<IPatternDetails> temporaryPatterns = new ArrayList<>();
     private final TeamProjectEHandler.Proxy tpeHandler = new TeamProjectEHandler.Proxy();
@@ -73,15 +74,16 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private final Path emcCacheFile;
     // LRU cache for AEItemKey -> String to avoid repeated toString() allocations in hot loops
     // Converted to fastutil linked map with manual synchronization to avoid boxed iteration overhead
-    private final it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap<AEItemKey, String> keyStringCache
-            = new it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap<>();
+    private final it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap<AEItemKey, String> keyStringCache =
+            new it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap<>();
     private final LongAdder KEY_STRING_CACHE_HITS = new LongAdder();
     private final LongAdder KEY_STRING_CACHE_MISSES = new LongAdder();
     // Warm queue for serialized AEKey caching. Background thread dedupes and main thread finalizes.
     private final ConcurrentLinkedQueue<appeng.api.stacks.AEKey> warmQueue = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<appeng.api.stacks.AEKey> finalWarmQueue = new ConcurrentLinkedQueue<>();
     // cache of created TransmutationPattern objects for known items to avoid allocations on each getPatterns()
-    private final Object2ObjectOpenHashMap<AEItemKey, TransmutationPattern> patternCache = new Object2ObjectOpenHashMap<>();
+    private final Object2ObjectOpenHashMap<AEItemKey, TransmutationPattern> patternCache =
+            new Object2ObjectOpenHashMap<>();
     private final List<TransmutationPattern> tierPatterns = new ArrayList<>();
     private int cachedHighestTier = 1;
 
@@ -94,7 +96,8 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         t.setDaemon(true);
         return t;
     });
-    private final java.util.concurrent.atomic.AtomicBoolean saveScheduled = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean saveScheduled =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
     // debounce interval is now configurable via AppliedEConfig
 
     // One-time startup seeding flags: when we load a persisted EMC TSV we mark that we should
@@ -104,9 +107,11 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     // simple server tick counter maintained from onServerStartTick()
     private int serverTickCounter = 0;
     // track last pattern update tick per node to avoid frequent repeated requestUpdate() calls
-    private final java.util.WeakHashMap<IManagedGridNode, Integer> lastPatternUpdateTick = new java.util.WeakHashMap<>();
+    private final java.util.WeakHashMap<IManagedGridNode, Integer> lastPatternUpdateTick =
+            new java.util.WeakHashMap<>();
     // fingerprint of published patterns per node to suppress unchanged updates
-    private final java.util.WeakHashMap<IManagedGridNode, Integer> lastPublishedFingerprint = new java.util.WeakHashMap<>();
+    private final java.util.WeakHashMap<IManagedGridNode, Integer> lastPublishedFingerprint =
+            new java.util.WeakHashMap<>();
 
     public KnowledgeService(IGrid grid) {
         this.grid = grid;
@@ -117,23 +122,27 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
         // start background task to aggregate and dedupe warm requests into finalWarmQueue
         // Use shared scheduler to avoid allocating one thread per KnowledgeService instance.
-        SHARED_SCHEDULER.scheduleWithFixedDelay(() -> {
-            try {
-                if (warmQueue.isEmpty()) return;
-                var dedup = new java.util.LinkedHashSet<appeng.api.stacks.AEKey>();
-                appeng.api.stacks.AEKey k;
-                while ((k = warmQueue.poll()) != null) {
-                    dedup.add(k);
-                    if (dedup.size() >= 1024) break; // limit per aggregation to avoid long background runs
-                }
+        SHARED_SCHEDULER.scheduleWithFixedDelay(
+                () -> {
+                    try {
+                        if (warmQueue.isEmpty()) return;
+                        var dedup = new java.util.LinkedHashSet<appeng.api.stacks.AEKey>();
+                        appeng.api.stacks.AEKey k;
+                        while ((k = warmQueue.poll()) != null) {
+                            dedup.add(k);
+                            if (dedup.size() >= 1024) break; // limit per aggregation to avoid long background runs
+                        }
 
-                for (var key : dedup) {
-                    finalWarmQueue.offer(key);
-                }
-            } catch (Throwable t) {
-                // best effort; swallow to avoid scheduler termination
-            }
-        }, 100, 100, TimeUnit.MILLISECONDS);
+                        for (var key : dedup) {
+                            finalWarmQueue.offer(key);
+                        }
+                    } catch (Throwable t) {
+                        // best effort; swallow to avoid scheduler termination
+                    }
+                },
+                100,
+                100,
+                TimeUnit.MILLISECONDS);
 
         MinecraftForge.EVENT_BUS.addListener((PlayerKnowledgeChangeEvent event) -> {
             knownItemCache = null;
@@ -390,9 +399,9 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                             try {
                                 var val = IEMCProxy.INSTANCE.getValue(stack);
                                 emcCache.put(key, val);
-                                 // persist string form for reloads and schedule async/coalesced save
-                                 persistedEmc.put(keyStr, val);
-                                 scheduleSaveEmcCacheToDisk();
+                                // persist string form for reloads and schedule async/coalesced save
+                                persistedEmc.put(keyStr, val);
+                                scheduleSaveEmcCacheToDisk();
                             } catch (Throwable ignored) {
                                 // if ProjectE lookup fails, skip caching for this key
                             }
@@ -469,16 +478,19 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private void scheduleSaveEmcCacheToDisk() {
         if (!saveScheduled.compareAndSet(false, true)) return;
 
-        SHARED_SCHEDULER.schedule(() -> {
-            try {
-                try {
-                    saveEmcCacheToDisk();
-                } catch (IOException ignored) {
-                }
-            } finally {
-                saveScheduled.set(false);
-            }
-        }, AppliedEConfig.CONFIG.getSaveDebounceMillis(), TimeUnit.MILLISECONDS);
+        SHARED_SCHEDULER.schedule(
+                () -> {
+                    try {
+                        try {
+                            saveEmcCacheToDisk();
+                        } catch (IOException ignored) {
+                        }
+                    } finally {
+                        saveScheduled.set(false);
+                    }
+                },
+                AppliedEConfig.CONFIG.getSaveDebounceMillis(),
+                TimeUnit.MILLISECONDS);
     }
 
     // Instrumentation getters to aid debugging and tuning

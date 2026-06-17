@@ -22,6 +22,10 @@ public abstract class MEStorageScreenMixin {
                     remap = false))
     // spotless:on
     private boolean hideEmcKey(MEStorageMenu menu, AEKey what) {
+        if (what == null) {
+            return false;
+        }
+
         return menu.isKeyVisible(what) && (!(what instanceof EMCKey) || menu instanceof TransmutationTerminalMenu);
     }
 }

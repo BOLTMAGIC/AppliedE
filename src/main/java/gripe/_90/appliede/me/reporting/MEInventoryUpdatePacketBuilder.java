@@ -2,12 +2,13 @@ package gripe._90.appliede.me.reporting;
 
 import java.util.ArrayList;
 import java.util.List;
-
-import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.LongAdder;
 
 import org.jetbrains.annotations.Nullable;
+
+import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
 
 import net.minecraft.network.FriendlyByteBuf;
 
@@ -24,7 +25,6 @@ import gripe._90.appliede.mixin.tooltip.BasePacketAccessor;
 import gripe._90.appliede.mixin.tooltip.MEInventoryUpdatePacketAccessor;
 
 import io.netty.buffer.Unpooled;
-import java.util.concurrent.atomic.LongAdder;
 
 /**
  * See {@link MEInventoryUpdatePacket}
@@ -211,8 +211,7 @@ public class MEInventoryUpdatePacketBuilder extends MEInventoryUpdatePacket.Buil
         return packets;
     }
 
-    private record CacheEntry(List<MEInventoryUpdatePacket> packets) {
-    }
+    private record CacheEntry(List<MEInventoryUpdatePacket> packets) {}
 
     public static int getPacketCacheSize() {
         synchronized (PACKET_CACHE) {

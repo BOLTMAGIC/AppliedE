@@ -107,7 +107,7 @@ public abstract class MEStorageMenuMixin extends AEBaseMenu {
 
         if (updateHelper.hasChanges()) {
             var builder = new MEInventoryUpdatePacketBuilder(containerId, updateHelper.isFullUpdate());
-            builder.setFilter(key -> isKeyVisible(key));
+            builder.setFilter(key -> key != null && isKeyVisible(key));
             builder.addChanges(updateHelper, availableStacks, craftable, new KeyCounter(), transmutable);
             builder.buildAndSend(packet -> sendPacketToClient(packet));
             updateHelper.commitChanges();

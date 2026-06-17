@@ -18,9 +18,9 @@ public class AppliedEConfig {
     private final ForgeConfigSpec.BooleanValue terminalExtractFromOwnEmcOnly;
     private final ForgeConfigSpec.IntValue syncThrottleInterval;
     private final ForgeConfigSpec.IntValue keyCacheMax;
-        private final ForgeConfigSpec.IntValue warmKeysPerTick;
-        private final ForgeConfigSpec.IntValue saveDebounceMillis;
-        private final ForgeConfigSpec.IntValue patternMinUpdateInterval;
+    private final ForgeConfigSpec.IntValue warmKeysPerTick;
+    private final ForgeConfigSpec.IntValue saveDebounceMillis;
+    private final ForgeConfigSpec.IntValue patternMinUpdateInterval;
 
     private AppliedEConfig(ForgeConfigSpec.Builder builder) {
         moduleEnergyUsage = builder.comment("The amount of AE energy per tick used by the ME Transmutation Module.")
