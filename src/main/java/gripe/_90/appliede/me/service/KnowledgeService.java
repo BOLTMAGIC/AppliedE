@@ -61,7 +61,12 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private final Object2ObjectOpenHashMap<UUID, Supplier<IKnowledgeProvider>> providers =
             new Object2ObjectOpenHashMap<>();
     private final EMCStorage storage = new EMCStorage(this);
-    private final List<IPatternDetails> temporaryPatterns = new ArrayList<>();
+    // temporary patterns are associated with a timestamp so we can garbage-collect
+    // stale patterns that for some reason were not removed by AE2 lifecycle hooks.
+    private final java.util.concurrent.ConcurrentHashMap<IPatternDetails, Long> temporaryPatterns =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    // TTL for temporary patterns in milliseconds; patterns older than this are pruned.
+    private static final long TEMPORARY_PATTERN_TTL_MS = 60_000L;
     private final TeamProjectEHandler.Proxy tpeHandler = new TeamProjectEHandler.Proxy();
 
     private final IGrid grid;
@@ -97,6 +102,42 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         t.setDaemon(true);
         return t;
     });
+    // Registry of active KnowledgeService instances held weakly so the static aggregator
+    // doesn't prevent GC of services when grids are unloaded. We use a ReferenceQueue to
+    // detect cleared references and an AtomicInteger to track live instance count. This
+    // allows quicker cleanup and reliable instrumentation instead of scanning all refs.
+    private static final java.lang.ref.ReferenceQueue<KnowledgeService> REF_QUEUE =
+            new java.lang.ref.ReferenceQueue<>();
+
+    private static final java.util.List<java.lang.ref.WeakReference<KnowledgeService>> INSTANCES =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    private static final java.util.concurrent.atomic.AtomicInteger LIVE_INSTANCES =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+
+    // Warn if instances exceed this threshold; helps detect runaway grid creation early.
+    private static final int WARN_INSTANCE_THRESHOLD = 500;
+    // recent creation stack snippets for diagnostic dumps when we detect runaway creation
+    private static final java.util.concurrent.ConcurrentLinkedDeque<String> CREATION_TRACES =
+            new java.util.concurrent.ConcurrentLinkedDeque<>();
+    private static final int CREATION_TRACE_MAX = 128;
+
+    private static void cleanupClearedReferences() {
+        java.lang.ref.Reference<? extends KnowledgeService> cleared;
+        int removed = 0;
+        while ((cleared = REF_QUEUE.poll()) != null) {
+            try {
+                //noinspection SuspiciousMethodCalls
+                INSTANCES.remove(cleared);
+                int live = LIVE_INSTANCES.decrementAndGet();
+                removed++;
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private static final java.util.concurrent.atomic.AtomicBoolean AGGREGATOR_STARTED =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
     private final java.util.concurrent.atomic.AtomicBoolean saveScheduled =
             new java.util.concurrent.atomic.AtomicBoolean(false);
     // debounce interval is now configurable via AppliedEConfig
@@ -105,6 +146,9 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     // attempt to enqueue warm requests for matching known items on the main thread in small batches.
     private boolean startupSeedQueued = false;
     private boolean startupSeeded = false;
+    // When cleanup removes patterns off-thread we signal the main server tick to force
+    // a pattern update on the main thread (ICraftingProvider.requestUpdate must run there).
+    private volatile boolean needsPatternRefresh = false;
     // simple server tick counter maintained from onServerStartTick()
     private int serverTickCounter = 0;
     // track last pattern update tick per node to avoid frequent repeated requestUpdate() calls
@@ -120,30 +164,114 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         // creating a run folder in the repository root. This keeps runtime files under config.
         emcCacheFile = Paths.get("config", "AppliedeE", "emc_cache.tsv");
         loadEmcCacheFromDisk();
+        // Register this instance for the shared aggregator and start the aggregator once.
+        // cleanup any cleared references first
+        cleanupClearedReferences();
 
-        // start background task to aggregate and dedupe warm requests into finalWarmQueue
-        // Use shared scheduler to avoid allocating one thread per KnowledgeService instance.
-        SHARED_SCHEDULER.scheduleWithFixedDelay(
-                () -> {
-                    try {
-                        if (warmQueue.isEmpty()) return;
-                        var dedup = new java.util.LinkedHashSet<appeng.api.stacks.AEKey>();
-                        appeng.api.stacks.AEKey k;
-                        while ((k = warmQueue.poll()) != null) {
-                            dedup.add(k);
-                            if (dedup.size() >= 1024) break; // limit per aggregation to avoid long background runs
-                        }
+        // track this instance with a weak reference registered to the ref queue
+        var instanceRef = new java.lang.ref.WeakReference<>(this, REF_QUEUE);
+        INSTANCES.add(instanceRef);
 
-                        for (var key : dedup) {
-                            finalWarmQueue.offer(key);
+        int liveCount = LIVE_INSTANCES.incrementAndGet();
+
+        // capture a short creation stack snippet for diagnostics (include thread name + top N frames)
+        try {
+            var st = new Exception().getStackTrace();
+            var sb = new StringBuilder();
+            // include thread name to help identify where services are created
+            sb.append("thread=").append(Thread.currentThread().getName()).append('\n');
+            int taken = 0;
+            for (var e : st) {
+                var cls = e.getClassName();
+                // skip frames originating from this class to show the external caller
+                if (cls.startsWith("gripe._90.appliede.me.service.KnowledgeService")) continue;
+                sb.append(e).append('\n');
+                if (++taken >= 8) break; // capture top 8 external frames
+            }
+            var s = sb.toString();
+            CREATION_TRACES.addFirst(s);
+            while (CREATION_TRACES.size() > CREATION_TRACE_MAX) CREATION_TRACES.removeLast();
+            // also emit a debug-level creation snippet so it's visible in most dev logs
+            // logging removed: creation trace suppressed
+        } catch (Throwable ignored) {
+        }
+
+        // logging removed for creation and thresholds
+
+        if (AGGREGATOR_STARTED.compareAndSet(false, true)) {
+            // single shared aggregator that iterates weak refs to instances and moves
+            // warmQueue entries into the corresponding finalWarmQueue. This avoids
+            // scheduling one repeating task per KnowledgeService instance.
+            SHARED_SCHEDULER.scheduleWithFixedDelay(
+                    () -> {
+                        try {
+                            cleanupClearedReferences();
+                            for (var ref : INSTANCES) {
+                                var ks = ref.get();
+                                if (ks == null) {
+                                    INSTANCES.remove(ref);
+                                    int liveNow = LIVE_INSTANCES.decrementAndGet();
+                                    continue;
+                                }
+
+                                if (ks.warmQueue.isEmpty()) continue;
+                                var dedup = new java.util.LinkedHashSet<appeng.api.stacks.AEKey>();
+                                appeng.api.stacks.AEKey k;
+                                int added = 0;
+                                while ((k = ks.warmQueue.poll()) != null) {
+                                    dedup.add(k);
+                                    added++;
+                                    if (dedup.size() >= 1024 || added >= 2048) break; // safety bounds
+                                }
+
+                                for (var key : dedup) {
+                                    ks.finalWarmQueue.offer(key);
+                                }
+                            }
+                        } catch (Throwable t) {
+                            // swallow to avoid scheduler termination
                         }
-                    } catch (Throwable t) {
-                        // best effort; swallow to avoid scheduler termination
-                    }
-                },
-                100,
-                100,
-                TimeUnit.MILLISECONDS);
+                    },
+                    100,
+                    100,
+                    TimeUnit.MILLISECONDS);
+
+            // background cleanup: remove temporary patterns older than TTL to ensure
+            // completed crafts don't leave stale patterns behind. Cleanup runs off-thread
+            // and only marks a flag to request a main-thread update.
+            SHARED_SCHEDULER.scheduleWithFixedDelay(
+                    () -> {
+                        try {
+                            final long now = System.currentTimeMillis();
+                            boolean removedAny = false;
+
+                            for (var ref : INSTANCES) {
+                                var ks = ref.get();
+                                if (ks == null) continue;
+
+                                for (var e : ks.temporaryPatterns.entrySet()) {
+                                    if (now - e.getValue() > TEMPORARY_PATTERN_TTL_MS) {
+                                        if (ks.temporaryPatterns.remove(e.getKey(), e.getValue())) {
+                                            removedAny = true;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (removedAny) {
+                                // request main-thread refresh next server tick
+                                for (var ref : INSTANCES) {
+                                    var ks = ref.get();
+                                    if (ks != null) ks.needsPatternRefresh = true;
+                                }
+                            }
+                        } catch (Throwable ignored) {
+                        }
+                    },
+                    5,
+                    5,
+                    TimeUnit.SECONDS);
+        }
 
         MinecraftForge.EVENT_BUS.addListener((PlayerKnowledgeChangeEvent event) -> {
             knownItemCache = null;
@@ -225,6 +353,13 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
             tpeHandler.syncTeamProviders(providers);
             needsSync = false;
             ticksSinceLastSync = 0;
+        }
+
+        // If background cleanup or other off-thread actions requested a pattern refresh,
+        // perform the safe main-thread request here.
+        if (needsPatternRefresh) {
+            needsPatternRefresh = false;
+            forceUpdatePatterns();
         }
 
         // finalize a bounded number of warm keys per tick to avoid spikes
@@ -555,7 +690,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                 patterns.add(pattern);
             }
 
-            patterns.addAll(temporaryPatterns);
+            patterns.addAll(temporaryPatterns.keySet());
             return patterns;
         }
 
@@ -563,14 +698,25 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     }
 
     public void addTemporaryPattern(IPatternDetails pattern) {
-        temporaryPatterns.add(pattern);
-        // temporary patterns must be visible immediately for crafting
-        forceUpdatePatterns();
+        // Only add and trigger a refresh when this pattern did not already exist.
+        // TransmutationPattern implements equals/hashCode based on definition, so
+        // different instances representing the same logical pattern will be
+        // deduplicated by the map. Using putIfAbsent avoids repeatedly updating
+        // the timestamp and repeatedly requesting updates for the same pattern
+        // when crafting simulations create many equivalent pattern instances.
+        var now = System.currentTimeMillis();
+        var prev = temporaryPatterns.putIfAbsent(pattern, now);
+        if (prev == null) {
+            // newly added pattern: schedule a main-thread refresh
+            needsPatternRefresh = true;
+        }
     }
 
     public void removeTemporaryPattern(IPatternDetails pattern) {
-        temporaryPatterns.remove(pattern);
-        forceUpdatePatterns();
+        var removed = temporaryPatterns.remove(pattern) != null;
+        if (removed) {
+            needsPatternRefresh = true;
+        }
     }
 
     void updatePatterns() {
