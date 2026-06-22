@@ -164,7 +164,7 @@ public final class TransmutationPattern implements IPatternDetails {
             // in AE2 (e.g. crafting status entries) to encounter NPEs when they expect
             // a non-null AEKey. Returning the template is a safe default that preserves
             // the input key information for downstream code.
-            return template;
+            return null;
         }
     }
 }
