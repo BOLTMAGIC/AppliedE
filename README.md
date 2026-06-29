@@ -46,13 +46,11 @@ most deriving from AE2's and ProjectE's own assets. Some assets have been provid
 
 <!-- Images -->
 [badge_curseforge]: https://img.shields.io/badge/dynamic/json?color=e04e14&label=CurseForge&style=for-the-badge&query=downloads.total&url=https%3A%2F%2Fapi.cfwidget.com%2F1009940&logo=curseforge
-[badge_modrinth]: https://img.shields.io/modrinth/dt/SyKS54UY?color=5da545&label=Modrinth&style=for-the-badge&logo=modrinth
 
 <!-- Links -->
-[curseforge]: https://www.curseforge.com/minecraft/mc-mods/appliede
-[modrinth]: https://modrinth.com/mod/appliede
+[curseforge]: https://www.curseforge.com/minecraft/mc-mods/appliede-tps-fix
 [ae2]: https://github.com/AppliedEnergistics/Applied-Energistics-2
 [projecte]: https://www.curseforge.com/minecraft/mc-mods/projecte
-[issues]: https://github.com/62832/AppliedE/issues
+[issues]: https://github.com/BOLTMAGIC/AppliedE/issues
 [lgpl-v3]: https://www.gnu.org/licenses/lgpl-3.0.en.html
 [by-nc-sa-3.0]: https://creativecommons.org/licenses/by-nc-sa/3.0/
