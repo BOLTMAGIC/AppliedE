@@ -72,12 +72,23 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private final IGrid grid;
     private Set<AEItemKey> knownItemCache;
     /** Cache of EMC values for known AEItemKey instances to avoid repeated ItemStack creation and ProjectE lookups. */
-    // Use BigInteger here to match ProjectE / provider EMC semantics and avoid overflow when EMC exceeds Long.MAX_VALUE
-    private final Object2ObjectOpenHashMap<AEItemKey, java.math.BigInteger> emcCache = new Object2ObjectOpenHashMap<>();
-    // persisted simple string -> BigInteger map (key string -> emc) loaded from disk
-    private final Object2ObjectOpenHashMap<String, java.math.BigInteger> persistedEmc =
-            new Object2ObjectOpenHashMap<>();
-    private final Path emcCacheFile;
+    // Use BigInteger here to match ProjectE / provider EMC semantics and avoid overflow when EMC exceeds
+    // Long.MAX_VALUE.
+    // SHARED (static) across ALL KnowledgeService instances: EMC values are global (a single item -> EMC-value table
+    // loaded from one file, not grid- or player-specific). AE2 rebuilds grids constantly and creates one service per
+    // grid, so a per-instance copy of this ~20k-entry table multiplied across 1000+ leaked instances caused the OOM.
+    // ConcurrentHashMap because reads/writes happen on BOTH the server thread and the appliede-shared-scheduler thread
+    // (Object2ObjectOpenHashMap is not thread-safe and must not be shared unguarded).
+    private static final java.util.concurrent.ConcurrentHashMap<AEItemKey, java.math.BigInteger> emcCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    // persisted simple string -> BigInteger map (key string -> emc) loaded from disk; also SHARED + concurrent.
+    private static final java.util.concurrent.ConcurrentHashMap<String, java.math.BigInteger> persistedEmc =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    // Single shared on-disk location for the global EMC table.
+    private static final Path emcCacheFile = Paths.get("config", "AppliedeE", "emc_cache.tsv");
+    // Guards the one-time load of the shared EMC cache from disk (loaded exactly once for all instances).
+    private static final java.util.concurrent.atomic.AtomicBoolean emcCacheLoaded =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
     // LRU cache for AEItemKey -> String to avoid repeated toString() allocations in hot loops
     // Converted to fastutil linked map with manual synchronization to avoid boxed iteration overhead
     private final it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap<AEItemKey, String> keyStringCache =
@@ -138,7 +149,8 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
     private static final java.util.concurrent.atomic.AtomicBoolean AGGREGATOR_STARTED =
             new java.util.concurrent.atomic.AtomicBoolean(false);
-    private final java.util.concurrent.atomic.AtomicBoolean saveScheduled =
+    // Static: a single shared writer/debounce flag so the global EMC table is saved once, not once per instance.
+    private static final java.util.concurrent.atomic.AtomicBoolean saveScheduled =
             new java.util.concurrent.atomic.AtomicBoolean(false);
     // debounce interval is now configurable via AppliedEConfig
 
@@ -160,10 +172,14 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
     public KnowledgeService(IGrid grid) {
         this.grid = grid;
-        // Persisted EMC cache location: move from top-level run/ to config/AppliedeE/ to avoid
-        // creating a run folder in the repository root. This keeps runtime files under config.
-        emcCacheFile = Paths.get("config", "AppliedeE", "emc_cache.tsv");
+        // Persisted EMC cache lives under config/AppliedeE/ (see the static emcCacheFile). Load the shared
+        // global EMC table from disk exactly once across all instances (the load is internally guarded).
         loadEmcCacheFromDisk();
+        // Preserve the per-instance startup warm seed: if the shared persisted table has values, this grid
+        // should attempt to warm matching known items (previously every instance loaded the file and seeded).
+        if (!persistedEmc.isEmpty()) {
+            startupSeedQueued = true;
+        }
         // Register this instance for the shared aggregator and start the aggregator once.
         // cleanup any cleared references first
         cleanupClearedReferences();
@@ -549,7 +565,11 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         return knownItemCache;
     }
 
-    private void loadEmcCacheFromDisk() {
+    private static void loadEmcCacheFromDisk() {
+        // Load the shared global EMC table from disk exactly once, regardless of how many grids/instances exist.
+        if (!emcCacheLoaded.compareAndSet(false, true)) {
+            return;
+        }
         try {
             var parent = emcCacheFile.getParent();
             if (parent != null && !Files.exists(parent)) {
@@ -575,27 +595,19 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                     }
                 }
             }
-            // mark that we should attempt a startup seed of warm keys for items that we have persisted values for
-            if (!persistedEmc.isEmpty()) {
-                startupSeedQueued = true;
-            }
         } catch (IOException ignored) {
         }
     }
 
-    private void saveEmcCacheToDisk() throws IOException {
+    private static void saveEmcCacheToDisk() throws IOException {
         var parent = emcCacheFile.getParent();
         if (parent != null && !Files.exists(parent)) {
             Files.createDirectories(parent);
         }
 
-        // snapshot persistedEmc to avoid concurrent modification during write
-        java.util.Map<String, java.math.BigInteger> snapshot = new java.util.HashMap<>();
-        synchronized (persistedEmc) {
-            for (var e : persistedEmc.object2ObjectEntrySet()) {
-                snapshot.put(e.getKey(), e.getValue());
-            }
-        }
+        // Concurrent snapshot of the shared persistedEmc to avoid mutation during the write. ConcurrentHashMap's
+        // iterator is weakly consistent, so copying it into a plain HashMap never throws ConcurrentModification.
+        java.util.Map<String, java.math.BigInteger> snapshot = new java.util.HashMap<>(persistedEmc);
 
         try (BufferedWriter w = Files.newBufferedWriter(emcCacheFile, StandardCharsets.UTF_8)) {
             for (var e : snapshot.entrySet()) {
@@ -611,7 +623,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
      * Schedule an async/coalesced save of the persisted EMC cache to disk. Multiple calls within the
      * debounce window are coalesced into a single write.
      */
-    private void scheduleSaveEmcCacheToDisk() {
+    private static void scheduleSaveEmcCacheToDisk() {
         if (!saveScheduled.compareAndSet(false, true)) return;
 
         SHARED_SCHEDULER.schedule(
