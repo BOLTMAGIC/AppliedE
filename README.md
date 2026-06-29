@@ -1,6 +1,5 @@
 # AppliedE
 [![CurseForge Total Downloads][badge_curseforge]][curseforge]
-[![Modrinth Total Downloads][badge_modrinth]][modrinth]
 
 A Minecraft mod made as an add-on to both [Applied Energistics 2][ae2] and [ProjectE][projecte] providing more
 tightly-coupled integration between the two mods. Unlike conventional add-ons integrating the two together, AppliedE 
