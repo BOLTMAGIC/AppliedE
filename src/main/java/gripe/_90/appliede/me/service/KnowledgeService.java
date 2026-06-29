@@ -149,6 +149,12 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
     private static final java.util.concurrent.atomic.AtomicBoolean AGGREGATOR_STARTED =
             new java.util.concurrent.atomic.AtomicBoolean(false);
+    // Static: register the Forge event listeners exactly ONCE for the whole class, not once per instance. A
+    // per-instance listener captures `this`, so the global EVENT_BUS would strongly hold every KnowledgeService
+    // and prevent GC of services whose grids were unloaded (the root instance leak). The static handlers fan out
+    // over the weak-ref INSTANCES registry instead, so leaked services stay GC-able and event cost is O(live).
+    private static final java.util.concurrent.atomic.AtomicBoolean EVENT_LISTENERS_REGISTERED =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
     // Static: a single shared writer/debounce flag so the global EMC table is saved once, not once per instance.
     private static final java.util.concurrent.atomic.AtomicBoolean saveScheduled =
             new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -289,35 +295,66 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                     TimeUnit.SECONDS);
         }
 
-        MinecraftForge.EVENT_BUS.addListener((PlayerKnowledgeChangeEvent event) -> {
-            knownItemCache = null;
-            emcCache.clear();
-            // clear pattern cache since known items changed
-            patternCache.clear();
-            // clear persisted map as knowledge changed; will be rebuilt on next known items scan
-            persistedEmc.clear();
-            // Knowledge changed: force immediate pattern update so AE2 sees new transmutations
-            forceUpdatePatterns();
-        });
-        MinecraftForge.EVENT_BUS.addListener((OnDatapackSyncEvent event) -> {
-            if (event.getPlayer() == null) {
-                knownItemCache = null;
-                emcCache.clear();
-                patternCache.clear();
-                persistedEmc.clear();
-                // Datapack sync affects knowledge; ensure immediate refresh
-                forceUpdatePatterns();
-            }
-        });
+        // Register the Forge event listeners exactly ONCE (statically) on the first instance. Using static
+        // handlers that fan out over the INSTANCES weak-ref registry avoids capturing `this` on the global
+        // EVENT_BUS (the root KnowledgeService leak) and turns per-event cost from O(N listeners) into
+        // O(live instances) on these rare events.
+        if (EVENT_LISTENERS_REGISTERED.compareAndSet(false, true)) {
+            MinecraftForge.EVENT_BUS.addListener((PlayerKnowledgeChangeEvent event) -> onPlayerKnowledgeChange());
+            MinecraftForge.EVENT_BUS.addListener((OnDatapackSyncEvent event) -> {
+                if (event.getPlayer() == null) {
+                    onDatapackReload();
+                }
+            });
+        }
         // Note: io tasks also run on the shared scheduler to avoid per-instance threads.
         // (No per-instance executor allocation.)
+    }
+
+    /**
+     * A player's transmutation knowledge changed: the SET of known items may differ, but the EMC VALUES do not.
+     * Invalidate each live service's per-instance known-item/pattern caches and refresh patterns. The shared
+     * global EMC value cache is intentionally NOT cleared here (it only changes on a datapack/config reload).
+     * Fires on the server thread, the same thread that reads these per-instance caches.
+     */
+    private static void onPlayerKnowledgeChange() {
+        cleanupClearedReferences();
+        for (var ref : INSTANCES) {
+            var ks = ref.get();
+            if (ks == null) continue;
+            ks.knownItemCache = null;
+            // clear pattern cache since known items changed
+            ks.patternCache.clear();
+            // Knowledge changed: force immediate pattern update so AE2 sees new transmutations
+            ks.forceUpdatePatterns();
+        }
+    }
+
+    /**
+     * Datapack/recipe reload: EMC values themselves may have changed, so clear the shared global EMC cache ONCE,
+     * then have every live service rebuild its per-instance known-item/pattern caches. Server-thread only.
+     */
+    private static void onDatapackReload() {
+        // EMC values can change on a datapack/config reload — invalidate the shared global cache a single time.
+        emcCache.clear();
+        persistedEmc.clear();
+        cleanupClearedReferences();
+        for (var ref : INSTANCES) {
+            var ks = ref.get();
+            if (ks == null) continue;
+            ks.knownItemCache = null;
+            ks.patternCache.clear();
+            // Datapack sync affects knowledge; ensure immediate refresh
+            ks.forceUpdatePatterns();
+        }
     }
 
     @Override
     public void addNode(IGridNode gridNode, @Nullable CompoundTag savedData) {
         if (gridNode.getOwner() instanceof EMCModulePart module) {
+            // Adding a module changes the SET of known items (knownItemCache), not EMC values, so the
+            // shared EMC cache is left intact — grids churn nodes constantly and clearing it would thrash.
             knownItemCache = null;
-            emcCache.clear();
             moduleNodes.add(module.getMainNode());
             var uuid = gridNode.getOwningPlayerProfileId();
 
@@ -333,8 +370,8 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     @Override
     public void removeNode(IGridNode gridNode) {
         if (gridNode.getOwner() instanceof EMCModulePart module) {
+            // Removing a module changes the SET of known items, not EMC values — leave the shared EMC cache intact.
             knownItemCache = null;
-            emcCache.clear();
             moduleNodes.remove(module.getMainNode());
             providers.clear();
             tpeHandler.clear();
