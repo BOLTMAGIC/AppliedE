@@ -72,12 +72,23 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     private final IGrid grid;
     private Set<AEItemKey> knownItemCache;
     /** Cache of EMC values for known AEItemKey instances to avoid repeated ItemStack creation and ProjectE lookups. */
-    // Use BigInteger here to match ProjectE / provider EMC semantics and avoid overflow when EMC exceeds Long.MAX_VALUE
-    private final Object2ObjectOpenHashMap<AEItemKey, java.math.BigInteger> emcCache = new Object2ObjectOpenHashMap<>();
-    // persisted simple string -> BigInteger map (key string -> emc) loaded from disk
-    private final Object2ObjectOpenHashMap<String, java.math.BigInteger> persistedEmc =
-            new Object2ObjectOpenHashMap<>();
-    private final Path emcCacheFile;
+    // Use BigInteger here to match ProjectE / provider EMC semantics and avoid overflow when EMC exceeds
+    // Long.MAX_VALUE.
+    // SHARED (static) across ALL KnowledgeService instances: EMC values are global (a single item -> EMC-value table
+    // loaded from one file, not grid- or player-specific). AE2 rebuilds grids constantly and creates one service per
+    // grid, so a per-instance copy of this ~20k-entry table multiplied across 1000+ leaked instances caused the OOM.
+    // ConcurrentHashMap because reads/writes happen on BOTH the server thread and the appliede-shared-scheduler thread
+    // (Object2ObjectOpenHashMap is not thread-safe and must not be shared unguarded).
+    private static final java.util.concurrent.ConcurrentHashMap<AEItemKey, java.math.BigInteger> emcCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    // persisted simple string -> BigInteger map (key string -> emc) loaded from disk; also SHARED + concurrent.
+    private static final java.util.concurrent.ConcurrentHashMap<String, java.math.BigInteger> persistedEmc =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    // Single shared on-disk location for the global EMC table.
+    private static final Path emcCacheFile = Paths.get("config", "AppliedeE", "emc_cache.tsv");
+    // Guards the one-time load of the shared EMC cache from disk (loaded exactly once for all instances).
+    private static final java.util.concurrent.atomic.AtomicBoolean emcCacheLoaded =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
     // LRU cache for AEItemKey -> String to avoid repeated toString() allocations in hot loops
     // Converted to fastutil linked map with manual synchronization to avoid boxed iteration overhead
     private final it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap<AEItemKey, String> keyStringCache =
@@ -138,7 +149,14 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
     private static final java.util.concurrent.atomic.AtomicBoolean AGGREGATOR_STARTED =
             new java.util.concurrent.atomic.AtomicBoolean(false);
-    private final java.util.concurrent.atomic.AtomicBoolean saveScheduled =
+    // Static: register the Forge event listeners exactly ONCE for the whole class, not once per instance. A
+    // per-instance listener captures `this`, so the global EVENT_BUS would strongly hold every KnowledgeService
+    // and prevent GC of services whose grids were unloaded (the root instance leak). The static handlers fan out
+    // over the weak-ref INSTANCES registry instead, so leaked services stay GC-able and event cost is O(live).
+    private static final java.util.concurrent.atomic.AtomicBoolean EVENT_LISTENERS_REGISTERED =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+    // Static: a single shared writer/debounce flag so the global EMC table is saved once, not once per instance.
+    private static final java.util.concurrent.atomic.AtomicBoolean saveScheduled =
             new java.util.concurrent.atomic.AtomicBoolean(false);
     // debounce interval is now configurable via AppliedEConfig
 
@@ -160,10 +178,14 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
     public KnowledgeService(IGrid grid) {
         this.grid = grid;
-        // Persisted EMC cache location: move from top-level run/ to config/AppliedeE/ to avoid
-        // creating a run folder in the repository root. This keeps runtime files under config.
-        emcCacheFile = Paths.get("config", "AppliedeE", "emc_cache.tsv");
+        // Persisted EMC cache lives under config/AppliedeE/ (see the static emcCacheFile). Load the shared
+        // global EMC table from disk exactly once across all instances (the load is internally guarded).
         loadEmcCacheFromDisk();
+        // Preserve the per-instance startup warm seed: if the shared persisted table has values, this grid
+        // should attempt to warm matching known items (previously every instance loaded the file and seeded).
+        if (!persistedEmc.isEmpty()) {
+            startupSeedQueued = true;
+        }
         // Register this instance for the shared aggregator and start the aggregator once.
         // cleanup any cleared references first
         cleanupClearedReferences();
@@ -273,35 +295,66 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                     TimeUnit.SECONDS);
         }
 
-        MinecraftForge.EVENT_BUS.addListener((PlayerKnowledgeChangeEvent event) -> {
-            knownItemCache = null;
-            emcCache.clear();
-            // clear pattern cache since known items changed
-            patternCache.clear();
-            // clear persisted map as knowledge changed; will be rebuilt on next known items scan
-            persistedEmc.clear();
-            // Knowledge changed: force immediate pattern update so AE2 sees new transmutations
-            forceUpdatePatterns();
-        });
-        MinecraftForge.EVENT_BUS.addListener((OnDatapackSyncEvent event) -> {
-            if (event.getPlayer() == null) {
-                knownItemCache = null;
-                emcCache.clear();
-                patternCache.clear();
-                persistedEmc.clear();
-                // Datapack sync affects knowledge; ensure immediate refresh
-                forceUpdatePatterns();
-            }
-        });
+        // Register the Forge event listeners exactly ONCE (statically) on the first instance. Using static
+        // handlers that fan out over the INSTANCES weak-ref registry avoids capturing `this` on the global
+        // EVENT_BUS (the root KnowledgeService leak) and turns per-event cost from O(N listeners) into
+        // O(live instances) on these rare events.
+        if (EVENT_LISTENERS_REGISTERED.compareAndSet(false, true)) {
+            MinecraftForge.EVENT_BUS.addListener((PlayerKnowledgeChangeEvent event) -> onPlayerKnowledgeChange());
+            MinecraftForge.EVENT_BUS.addListener((OnDatapackSyncEvent event) -> {
+                if (event.getPlayer() == null) {
+                    onDatapackReload();
+                }
+            });
+        }
         // Note: io tasks also run on the shared scheduler to avoid per-instance threads.
         // (No per-instance executor allocation.)
+    }
+
+    /**
+     * A player's transmutation knowledge changed: the SET of known items may differ, but the EMC VALUES do not.
+     * Invalidate each live service's per-instance known-item/pattern caches and refresh patterns. The shared
+     * global EMC value cache is intentionally NOT cleared here (it only changes on a datapack/config reload).
+     * Fires on the server thread, the same thread that reads these per-instance caches.
+     */
+    private static void onPlayerKnowledgeChange() {
+        cleanupClearedReferences();
+        for (var ref : INSTANCES) {
+            var ks = ref.get();
+            if (ks == null) continue;
+            ks.knownItemCache = null;
+            // clear pattern cache since known items changed
+            ks.patternCache.clear();
+            // Knowledge changed: force immediate pattern update so AE2 sees new transmutations
+            ks.forceUpdatePatterns();
+        }
+    }
+
+    /**
+     * Datapack/recipe reload: EMC values themselves may have changed, so clear the shared global EMC cache ONCE,
+     * then have every live service rebuild its per-instance known-item/pattern caches. Server-thread only.
+     */
+    private static void onDatapackReload() {
+        // EMC values can change on a datapack/config reload — invalidate the shared global cache a single time.
+        emcCache.clear();
+        persistedEmc.clear();
+        cleanupClearedReferences();
+        for (var ref : INSTANCES) {
+            var ks = ref.get();
+            if (ks == null) continue;
+            ks.knownItemCache = null;
+            ks.patternCache.clear();
+            // Datapack sync affects knowledge; ensure immediate refresh
+            ks.forceUpdatePatterns();
+        }
     }
 
     @Override
     public void addNode(IGridNode gridNode, @Nullable CompoundTag savedData) {
         if (gridNode.getOwner() instanceof EMCModulePart module) {
+            // Adding a module changes the SET of known items (knownItemCache), not EMC values, so the
+            // shared EMC cache is left intact — grids churn nodes constantly and clearing it would thrash.
             knownItemCache = null;
-            emcCache.clear();
             moduleNodes.add(module.getMainNode());
             var uuid = gridNode.getOwningPlayerProfileId();
 
@@ -317,8 +370,8 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
     @Override
     public void removeNode(IGridNode gridNode) {
         if (gridNode.getOwner() instanceof EMCModulePart module) {
+            // Removing a module changes the SET of known items, not EMC values — leave the shared EMC cache intact.
             knownItemCache = null;
-            emcCache.clear();
             moduleNodes.remove(module.getMainNode());
             providers.clear();
             tpeHandler.clear();
@@ -549,7 +602,11 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         return knownItemCache;
     }
 
-    private void loadEmcCacheFromDisk() {
+    private static void loadEmcCacheFromDisk() {
+        // Load the shared global EMC table from disk exactly once, regardless of how many grids/instances exist.
+        if (!emcCacheLoaded.compareAndSet(false, true)) {
+            return;
+        }
         try {
             var parent = emcCacheFile.getParent();
             if (parent != null && !Files.exists(parent)) {
@@ -575,27 +632,19 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                     }
                 }
             }
-            // mark that we should attempt a startup seed of warm keys for items that we have persisted values for
-            if (!persistedEmc.isEmpty()) {
-                startupSeedQueued = true;
-            }
         } catch (IOException ignored) {
         }
     }
 
-    private void saveEmcCacheToDisk() throws IOException {
+    private static void saveEmcCacheToDisk() throws IOException {
         var parent = emcCacheFile.getParent();
         if (parent != null && !Files.exists(parent)) {
             Files.createDirectories(parent);
         }
 
-        // snapshot persistedEmc to avoid concurrent modification during write
-        java.util.Map<String, java.math.BigInteger> snapshot = new java.util.HashMap<>();
-        synchronized (persistedEmc) {
-            for (var e : persistedEmc.object2ObjectEntrySet()) {
-                snapshot.put(e.getKey(), e.getValue());
-            }
-        }
+        // Concurrent snapshot of the shared persistedEmc to avoid mutation during the write. ConcurrentHashMap's
+        // iterator is weakly consistent, so copying it into a plain HashMap never throws ConcurrentModification.
+        java.util.Map<String, java.math.BigInteger> snapshot = new java.util.HashMap<>(persistedEmc);
 
         try (BufferedWriter w = Files.newBufferedWriter(emcCacheFile, StandardCharsets.UTF_8)) {
             for (var e : snapshot.entrySet()) {
@@ -611,7 +660,7 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
      * Schedule an async/coalesced save of the persisted EMC cache to disk. Multiple calls within the
      * debounce window are coalesced into a single write.
      */
-    private void scheduleSaveEmcCacheToDisk() {
+    private static void scheduleSaveEmcCacheToDisk() {
         if (!saveScheduled.compareAndSet(false, true)) return;
 
         SHARED_SCHEDULER.schedule(
