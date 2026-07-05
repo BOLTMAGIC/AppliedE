@@ -86,6 +86,10 @@ public class TransmutationTerminalMenu extends MEStorageMenu {
                     if (provider.hasKnowledge(getCarried())) {
                         provider.removeKnowledge(getCarried());
                         provider.syncKnowledgeChange(player, ItemInfo.fromStack(getCarried()), false);
+                        // Ensure the AE2 patterns and our per-instance caches are refreshed immediately so the
+                        // unlearned item is no longer craftable. Some ProjectE provider implementations may not
+                        // reliably trigger the global event in all contexts, so proactively invalidate and update.
+                        knowledge.notifyKnowledgeChanged();
                         unlearnedLabelTicks = 300;
                         learnedLabelTicks = 0;
                         broadcastChanges();

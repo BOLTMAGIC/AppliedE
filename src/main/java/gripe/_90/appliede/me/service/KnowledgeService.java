@@ -828,6 +828,17 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
         moduleNodes.forEach(ICraftingProvider::requestUpdate);
     }
 
+    /**
+     * Notify this KnowledgeService instance that a player's known-items set changed.
+     * Clears the per-instance known-item/pattern caches and forces an immediate pattern update
+     * so AE2 sees the change right away. This is safe to call from the server thread.
+     */
+    public void notifyKnowledgeChanged() {
+        knownItemCache = null;
+        patternCache.clear();
+        forceUpdatePatterns();
+    }
+
     IGrid getGrid() {
         return grid;
     }
