@@ -29,6 +29,9 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.entity.player.Player;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.OnDatapackSyncEvent;
+import net.minecraftforge.event.entity.player.PlayerEvent;
+import net.minecraftforge.server.ServerLifecycleHooks;
+import appeng.api.features.IPlayerRegistry;
 
 import appeng.api.crafting.IPatternDetails;
 import appeng.api.networking.IGrid;
@@ -306,6 +309,32 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
                     onDatapackReload();
                 }
             });
+            // Ensure providers are registered and patterns refreshed when a player joins if that player
+            // owns any EMC module nodes in a service. Without this, grids sometimes require a manual block
+            // update (break/place) to pick up the transmutation provider for the joining player.
+            MinecraftForge.EVENT_BUS.addListener((PlayerEvent.PlayerLoggedInEvent event) -> {
+                var entity = event.getEntity();
+                if (entity == null) return;
+                var uuid = entity.getUUID();
+                 cleanupClearedReferences();
+                 for (var ref : INSTANCES) {
+                     var ks = ref.get();
+                     if (ks == null) continue;
+                     try {
+                         for (var mainNode : ks.moduleNodes) {
+                             var node = mainNode.getNode();
+                             if (node == null) continue;
+                             var owner = node.getOwningPlayerProfileId();
+                             if (owner != null && owner.equals(uuid)) {
+                                 ks.addProvider(uuid);
+                                 ks.forceUpdatePatterns();
+                                 break;
+                             }
+                         }
+                     } catch (Throwable ignored) {
+                     }
+                 }
+             });
         }
         // Note: io tasks also run on the shared scheduler to avoid per-instance threads.
         // (No per-instance executor allocation.)
@@ -486,9 +515,34 @@ public class KnowledgeService implements IGridService, IGridServiceProvider {
 
     List<IKnowledgeProvider> getProviders() {
         var out = new ArrayList<IKnowledgeProvider>(providers.size());
-        for (var s : providers.values()) {
-            out.add(s.get());
+        var server = ServerLifecycleHooks.getCurrentServer();
+
+        for (var entry : providers.entrySet()) {
+            try {
+                var uuid = entry.getKey();
+                boolean connected = false;
+
+                if (server != null) {
+                    try {
+                        var id = IPlayerRegistry.getMapping(server).getPlayerId(uuid);
+                        var player = IPlayerRegistry.getConnected(server, id);
+                        connected = player != null;
+                    } catch (Throwable ignored) {
+                        // If registry lookup fails, treat as offline to avoid instantiating heavy providers
+                    }
+                }
+
+                // If player is online OR is part of a tracked team, instantiate/get the provider.
+                if (connected || tpeHandler.isPlayerInTrackedTeam(uuid)) {
+                    try {
+                        out.add(entry.getValue().get());
+                    } catch (Throwable ignored) {
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
         }
+
         return out;
     }
 
