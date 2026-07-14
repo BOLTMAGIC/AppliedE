@@ -136,6 +136,18 @@ public final class EMCModulePart extends AEBasePart
                 outputs.removeLong(what);
             } else if (inserted > 0) {
                 outputs.put(what, amount - inserted);
+            } else {
+                // Insert returned 0. It's possible the item already exists in the network
+                // (e.g. inserted by another path) but the insert call returned 0 due to
+                // a transient mismatch. To avoid endless crafting loops, check the
+                // cached inventory — if the network already contains the requested
+                // quantity treat the output as satisfied.
+                var cached = node.getGrid().getStorageService().getCachedInventory();
+                long existing = cached.get(what);
+
+                if (existing >= amount) {
+                    outputs.removeLong(what);
+                }
             }
         }
 
